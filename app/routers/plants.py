@@ -1,15 +1,26 @@
 """Plants module: tracking, watering schedules, due/overdue detection, history."""
 from __future__ import annotations
 
+import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..database import get_conn, rows_to_dicts
+from ..database import PHOTOS_DIR, get_conn, rows_to_dicts
+from ..vision import IdentificationError, identify_plant
 
 router = APIRouter(prefix="/api/plants", tags=["plants"])
+
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8 MB
 
 
 class PlantIn(BaseModel):
@@ -19,6 +30,7 @@ class PlantIn(BaseModel):
     watering_frequency_days: int = Field(default=7, ge=1)
     last_watered_at: Optional[str] = None  # ISO datetime; None = jamais arrosée
     notes: str = ""
+    photo: Optional[str] = None  # token renvoyé par POST /identify (attache la photo)
 
 
 class WaterEvent(BaseModel):
@@ -70,8 +82,66 @@ def create_plant(plant: PlantIn):
             (plant.name, plant.species, plant.location, plant.watering_frequency_days,
              plant.last_watered_at, plant.notes),
         )
-        row = conn.execute("SELECT * FROM plants WHERE id = ?", (cur.lastrowid,)).fetchone()
+        plant_id = cur.lastrowid
+        photo = _claim_photo(plant.photo, plant_id)
+        if photo:
+            conn.execute("UPDATE plants SET photo = ? WHERE id = ?", (photo, plant_id))
+        row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
     return _enrich(dict(row))
+
+
+def _claim_photo(token: Optional[str], plant_id: int) -> Optional[str]:
+    """Move a temp photo from /identify to its final plant_{id} name. Returns filename or None."""
+    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
+        return None
+    for ext in ALLOWED_IMAGE_TYPES.values():
+        tmp = PHOTOS_DIR / f"tmp_{token}{ext}"
+        if tmp.exists():
+            final_name = f"plant_{plant_id}{ext}"
+            tmp.replace(PHOTOS_DIR / final_name)
+            # Remove any previous photo with a different extension.
+            for old in PHOTOS_DIR.glob(f"plant_{plant_id}.*"):
+                if old.name != final_name:
+                    old.unlink()
+            return final_name
+    return None
+
+
+@router.post("/identify")
+async def identify(file: UploadFile = File(...)):
+    """Identify a plant from a photo (camera or upload) via a vision LLM.
+
+    Returns suggested fields to pre-fill the plant form, plus a `photo_token`:
+    pass it back as `photo` when creating/updating the plant to attach the photo.
+    """
+    ext = ALLOWED_IMAGE_TYPES.get(file.content_type or "")
+    if not ext:
+        raise HTTPException(415, "Format d'image non supporté (JPEG, PNG ou WebP attendu)")
+    content = await file.read()
+    if len(content) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Image trop lourde (8 Mo max)")
+
+    try:
+        suggestion = await identify_plant(content, file.content_type)
+    except IdentificationError as e:
+        raise HTTPException(502, str(e))
+
+    token = uuid.uuid4().hex
+    (PHOTOS_DIR / f"tmp_{token}{ext}").write_bytes(content)
+    return {**suggestion, "photo_token": token}
+
+
+@router.get("/{plant_id}/photo")
+def plant_photo(plant_id: int):
+    """Serve the plant's photo, if one was attached during identification."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT photo FROM plants WHERE id = ?", (plant_id,)).fetchone()
+    if not row or not row["photo"]:
+        raise HTTPException(404, "Pas de photo pour cette plante")
+    path = PHOTOS_DIR / row["photo"]
+    if not path.exists():
+        raise HTTPException(404, "Fichier photo introuvable")
+    return FileResponse(path)
 
 
 @router.get("/due")
@@ -106,6 +176,9 @@ def update_plant(plant_id: int, plant: PlantIn):
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Plante introuvable")
+        photo = _claim_photo(plant.photo, plant_id)
+        if photo:
+            conn.execute("UPDATE plants SET photo = ? WHERE id = ?", (photo, plant_id))
         row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
     return _enrich(dict(row))
 
@@ -113,9 +186,14 @@ def update_plant(plant_id: int, plant: PlantIn):
 @router.delete("/{plant_id}", status_code=204)
 def delete_plant(plant_id: int):
     with get_conn() as conn:
+        row = conn.execute("SELECT photo FROM plants WHERE id = ?", (plant_id,)).fetchone()
         cur = conn.execute("DELETE FROM plants WHERE id = ?", (plant_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "Plante introuvable")
+    if row and row["photo"]:
+        path = PHOTOS_DIR / row["photo"]
+        if path.exists():
+            path.unlink()
 
 
 @router.post("/{plant_id}/water", status_code=201)

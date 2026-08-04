@@ -8,7 +8,10 @@ A self-hosted household dashboard ("Dashboard de la Perrucherie") running on a
 local network. Current features:
 
 1. **Plants** — track household plants, watering frequency, due/overdue
-   detection, watering history, browser notifications.
+   detection, watering history, browser notifications, and **AI plant
+   identification**: snap a photo (phone camera or upload) and a vision LLM
+   (via OpenRouter) pre-fills the new-plant form; the photo is saved and
+   shown on the plant card.
 2. **Meal prep** — a dish library + multi-week meal plans on a
    `weeks × 7 days × meals-per-day` grid.
 
@@ -56,18 +59,22 @@ Then open `http://<host-ip>:8000` from any device on the network.
 ```
 app/
   main.py            FastAPI app, /api/summary, static serving
-  database.py        SQLite connection + schema (init_db)
+  config.py          env/.env config (OPENROUTER_API_KEY, OPENROUTER_MODEL)
+  vision.py          OpenRouter vision call → plant identification (strict JSON)
+  database.py        SQLite connection + schema (init_db, additive migrations)
   routers/
-    plants.py        /api/plants*  (CRUD, /water, /due, history)
+    plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
     meals.py         /api/dishes*, /api/meal-plans* (grid entries)
 static/
   index.html         SPA shell (3 views: Accueil / Plantes / Repas)
   style.css          theme (dark botanical)
   app.js             all frontend logic, fetch-based
 data/dashboard.db    SQLite data (committed, portable)
+data/photos/         plant photos from identification (committed like the DB)
+.env                 OpenRouter API key (gitignored — see .env.example)
 Dockerfile           all-in-one image (python:3.12-slim + uvicorn)
-docker-compose.yml   single service, port mapping, ./data bind mount
-.dockerignore        keeps .venv/data/docs out of the image
+docker-compose.yml   single service, port mapping, ./data bind mount, env passthrough
+.dockerignore        keeps .venv/data/docs/.env out of the image
 run.sh               one-command launcher (no-Docker fallback)
 ```
 
@@ -90,6 +97,8 @@ locally: `http://localhost:8000`.
 | List / create plants | `GET` / `POST /api/plants` |
 | Get / update / delete plant | `GET` / `PUT` / `DELETE /api/plants/{id}` |
 | Record a watering | `POST /api/plants/{id}/water` body `{}` or `{"watered_at": ..., "note": ...}` |
+| Identify plant from photo | `POST /api/plants/identify` multipart `file` (JPEG/PNG/WebP, ≤ 8 MB) → `{name, species, watering_frequency_days, notes, photo_token}` |
+| Get a plant's photo | `GET /api/plants/{id}/photo` (404 if none) |
 | Dish library | `GET` / `POST /api/dishes`, `PUT` / `DELETE /api/dishes/{id}` |
 | Meal plans | `GET` / `POST /api/meal-plans`, `PUT` / `DELETE /api/meal-plans/{id}` |
 | Full plan grid | `GET /api/meal-plans/{id}` |
@@ -101,6 +110,13 @@ locally: `http://localhost:8000`.
   never_watered`, from `last_watered_at + watering_frequency_days`.
   `due_soon` = within 24 h of the next due date.
 - All datetimes are **ISO 8601 strings, server-local time**.
+- **Photo identification flow**: `POST /api/plants/identify` saves the photo as
+  `data/photos/tmp_<token>.<ext>` and returns a `photo_token`; pass it as
+  `photo` in `POST`/`PUT /api/plants` to attach it (renamed to
+  `plant_<id>.<ext>`). Requires `OPENROUTER_API_KEY` (env or `.env`);
+  the model is configurable via `OPENROUTER_MODEL`
+  (default `google/gemini-2.5-flash`). Photos live in `data/photos/` and are
+  committed like the DB; deleting a plant deletes its photo.
 - Meal-plan grid coordinates are 1-indexed: `week_index` 1..weeks,
   `day_index` 1..7 (1 = **lundi**), `slot_index` 1..meals_per_day.
 - UI copy is in **French**; code, identifiers and docs in English.
@@ -117,8 +133,14 @@ locally: `http://localhost:8000`.
   the DB ships with user data).
 - Any new feature must be exposed via the API **and** documented in this file's
   endpoint table.
-- After backend changes, verify with `./run.sh` and a quick `curl` against the
-  touched endpoints.
+- **After implementing a change, always relaunch the Docker stack** so the new
+  code is actually live: `docker compose up -d --build` (the container named
+  `perrucherie` is the production instance on this machine — local `./run.sh`
+  testing alone is not enough). Then verify with a quick `curl` against
+  `http://localhost:8000` on the touched endpoints.
+  - macOS gotcha: if the build fails with `docker-credential-osxkeychain:
+    executable file not found`, prepend Docker's bin dir to PATH first:
+    `export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"`.
 
 ## Portability rules
 

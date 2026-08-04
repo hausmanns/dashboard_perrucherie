@@ -18,4 +18,9 @@ services:
       # The SQLite DB stays a real file in this repo checkout, so it keeps
       # travelling with git commits/pulls. Container is disposable, data is not.
       - ./data:/app/data
+    environment:
+      # Plant photo identification (OpenRouter). docker compose reads ./.env
+      # automatically for interpolation, so just put your key in .env.
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemini-2.5-flash}
     restart: unless-stopped

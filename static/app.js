@@ -149,7 +149,9 @@ function renderPlants() {
     }
     return `
     <div class="card plant-card">
-      <span class="emoji">${plantEmoji(p.name)}</span>
+      ${p.photo
+        ? `<img class="plant-photo" src="/api/plants/${p.id}/photo" alt="${p.name}" loading="lazy" />`
+        : `<span class="emoji">${plantEmoji(p.name)}</span>`}
       <h3>${p.name}</h3>
       ${p.species ? `<div class="species">${p.species}</div>` : ""}
       ${p.location ? `<div class="location">📍 ${p.location}</div>` : ""}
@@ -179,6 +181,11 @@ function openPlantModal(id = null) {
   const form = $("#plant-form");
   form.reset();
   $("#plant-id").value = id || "";
+  $("#plant-photo-token").value = "";
+  $("#plant-photo-status").textContent = "";
+  const preview = $("#plant-photo-preview");
+  preview.classList.add("hidden");
+  preview.removeAttribute("src");
   $("#plant-modal-title").textContent = id ? "Modifier la plante" : "Ajouter une plante";
   if (id) {
     const p = state.plants.find((x) => x.id === id);
@@ -189,10 +196,72 @@ function openPlantModal(id = null) {
       $("#plant-freq").value = p.watering_frequency_days;
       $("#plant-last").value = p.last_watered_at ? p.last_watered_at.slice(0, 16) : "";
       $("#plant-notes").value = p.notes;
+      if (p.photo) {
+        preview.src = `/api/plants/${p.id}/photo`;
+        preview.classList.remove("hidden");
+      }
     }
   }
   $("#plant-modal").showModal();
 }
+
+/* ---- Identification par photo (vision LLM) ---- */
+
+// Downscale phone photos before upload (faster, smaller, no backend deps).
+function downscaleImage(file, maxSize = 1024, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Image illisible"))), "image/jpeg", quality);
+    };
+    img.onerror = () => reject(new Error("Image illisible"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+$("#plant-photo-btn").addEventListener("click", () => $("#plant-photo-input").click());
+
+$("#plant-photo-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ""; // allow re-picking the same file
+  if (!file) return;
+
+  const status = $("#plant-photo-status");
+  const btn = $("#plant-photo-btn");
+  const preview = $("#plant-photo-preview");
+  try {
+    const blob = await downscaleImage(file);
+    preview.src = URL.createObjectURL(blob);
+    preview.classList.remove("hidden");
+    status.textContent = "🔍 Identification en cours…";
+    btn.disabled = true;
+
+    const fd = new FormData();
+    fd.append("file", blob, "plante.jpg");
+    const res = await fetch("/api/plants/identify", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Erreur ${res.status}`);
+
+    if (data.name) $("#plant-name").value = data.name;
+    if (data.species) $("#plant-species").value = data.species;
+    if (data.watering_frequency_days) $("#plant-freq").value = data.watering_frequency_days;
+    if (data.notes) $("#plant-notes").value = data.notes;
+    $("#plant-photo-token").value = data.photo_token || "";
+    status.textContent = "✅ Plante identifiée — vérifiez et ajustez si besoin.";
+  } catch (err) {
+    status.textContent = "";
+    preview.classList.add("hidden");
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $("#plant-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -205,6 +274,7 @@ $("#plant-form").addEventListener("submit", async (e) => {
     watering_frequency_days: parseInt($("#plant-freq").value, 10),
     last_watered_at: lastVal ? lastVal + ":00" : null,
     notes: $("#plant-notes").value.trim(),
+    photo: $("#plant-photo-token").value || null,
   };
   try {
     if (id) await api.put(`/api/plants/${id}`, payload);

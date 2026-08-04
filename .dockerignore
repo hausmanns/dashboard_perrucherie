@@ -5,6 +5,8 @@ __pycache__/
 .git/
 .gitignore
 .DS_Store
+.env
+.env.example
 
 # The database must never be baked into the image — it is bind-mounted
 # from ./data at runtime (see docker-compose.yml).

@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+.env
 
 # NOTE: data/dashboard.db is intentionally NOT ignored.
 # The SQLite database travels with the repo so a `git pull`

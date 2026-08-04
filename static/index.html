@@ -85,6 +85,15 @@
     <form method="dialog" id="plant-form">
       <h3 id="plant-modal-title">Ajouter une plante</h3>
       <input type="hidden" id="plant-id" />
+      <input type="hidden" id="plant-photo-token" />
+      <input type="file" id="plant-photo-input" accept="image/*" capture="environment" hidden />
+      <div class="photo-id-row">
+        <img id="plant-photo-preview" class="photo-preview hidden" alt="Photo de la plante" />
+        <div class="photo-id-side">
+          <button type="button" class="btn btn-ghost btn-sm" id="plant-photo-btn">📷 Identifier par photo</button>
+          <small id="plant-photo-status" class="muted"></small>
+        </div>
+      </div>
       <label>Nom *<input id="plant-name" required placeholder="Monstera du salon" /></label>
       <label>Espèce<input id="plant-species" placeholder="Monstera deliciosa" /></label>
       <label>Emplacement<input id="plant-location" placeholder="Salon, près de la fenêtre" /></label>

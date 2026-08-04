@@ -12,6 +12,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "dashboard.db"
+PHOTOS_DIR = DATA_DIR / "photos"  # plant photos (committed like the DB)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS plants (
@@ -66,8 +67,17 @@ CREATE TABLE IF NOT EXISTS meal_plan_entries (
 
 def init_db() -> None:
     DATA_DIR.mkdir(exist_ok=True)
+    PHOTOS_DIR.mkdir(exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn) -> None:
+    """Additive-only migrations (the DB ships with user data — never destructive)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(plants)")}
+    if "photo" not in cols:
+        conn.execute("ALTER TABLE plants ADD COLUMN photo TEXT")  # filename in data/photos/
 
 
 @contextmanager
