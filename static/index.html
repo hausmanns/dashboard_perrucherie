@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard de la Perrucherie</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦜</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-emoji">🦜</span>
+      <div>
+        <h1>La Perrucherie</h1>
+        <p class="subtitle">Dashboard de la maison</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="home">🏠 Accueil</button>
+      <button class="tab" data-view="plants">🌿 Plantes <span id="plants-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="meals">🍽️ Repas</button>
+    </nav>
+    <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage">🔔</button>
+  </header>
+
+  <main>
+    <!-- ================= ACCUEIL ================= -->
+    <section id="view-home" class="view active">
+      <div class="home-grid">
+        <div class="card home-card">
+          <h2>🌿 Arrosages à faire</h2>
+          <div id="home-due-plants" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card">
+          <h2>🍽️ Repas du jour</h2>
+          <div id="home-today-meals" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card">
+          <h2>📊 En bref</h2>
+          <div id="home-stats" class="stats"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= PLANTES ================= -->
+    <section id="view-plants" class="view">
+      <div class="section-head">
+        <h2>Mes plantes</h2>
+        <button class="btn btn-primary" id="add-plant-btn">+ Ajouter une plante</button>
+      </div>
+      <div id="plants-grid" class="plants-grid"></div>
+    </section>
+
+    <!-- ================= REPAS ================= -->
+    <section id="view-meals" class="view">
+      <div class="meals-layout">
+        <aside class="card dishes-panel">
+          <div class="section-head">
+            <h3>Bibliothèque de plats</h3>
+            <button class="btn btn-primary btn-sm" id="add-dish-btn">+ Plat</button>
+          </div>
+          <div id="dishes-list" class="dishes-list"></div>
+        </aside>
+
+        <div class="plan-panel">
+          <div class="section-head">
+            <h3>Plan de repas</h3>
+            <div class="plan-actions">
+              <select id="plan-select"></select>
+              <button class="btn btn-primary btn-sm" id="add-plan-btn">+ Nouveau plan</button>
+              <button class="btn btn-ghost btn-sm" id="delete-plan-btn" title="Supprimer le plan">🗑️</button>
+            </div>
+          </div>
+          <div id="plan-meta" class="plan-meta"></div>
+          <div id="week-tabs" class="week-tabs"></div>
+          <div id="plan-grid-wrap"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= MODALE PLANTE ================= -->
+  <dialog id="plant-modal" class="modal">
+    <form method="dialog" id="plant-form">
+      <h3 id="plant-modal-title">Ajouter une plante</h3>
+      <input type="hidden" id="plant-id" />
+      <label>Nom *<input id="plant-name" required placeholder="Monstera du salon" /></label>
+      <label>Espèce<input id="plant-species" placeholder="Monstera deliciosa" /></label>
+      <label>Emplacement<input id="plant-location" placeholder="Salon, près de la fenêtre" /></label>
+      <label>Fréquence d'arrosage (jours) *<input id="plant-freq" type="number" min="1" value="7" required /></label>
+      <label>Dernier arrosage<input id="plant-last" type="datetime-local" /></label>
+      <label>Notes<textarea id="plant-notes" rows="2" placeholder="Aime la lumière indirecte…"></textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE PLAT ================= -->
+  <dialog id="dish-modal" class="modal">
+    <form method="dialog" id="dish-form">
+      <h3 id="dish-modal-title">Ajouter un plat</h3>
+      <input type="hidden" id="dish-id" />
+      <label>Nom *<input id="dish-name" required placeholder="Curry de pois chiches" /></label>
+      <label>Catégorie
+        <select id="dish-category">
+          <option value="petit-dej">Petit-déjeuner</option>
+          <option value="dejeuner">Déjeuner</option>
+          <option value="diner" selected>Dîner</option>
+          <option value="snack">Snack</option>
+        </select>
+      </label>
+      <label>Temps de préparation (min)<input id="dish-prep" type="number" min="0" placeholder="30" /></label>
+      <label>Lien recette<input id="dish-url" type="url" placeholder="https://…" /></label>
+      <label>Notes<textarea id="dish-notes" rows="2"></textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE PLAN ================= -->
+  <dialog id="plan-modal" class="modal">
+    <form method="dialog" id="plan-form">
+      <h3>Nouveau plan de repas</h3>
+      <label>Nom *<input id="plan-name" required placeholder="Meal prep d'août" /></label>
+      <label>Début (lundi de la semaine 1) *<input id="plan-start" type="date" required /></label>
+      <label>Nombre de semaines *<input id="plan-weeks" type="number" min="1" max="12" value="2" required /></label>
+      <label>Repas par jour *<input id="plan-meals" type="number" min="1" max="6" value="2" required /></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Créer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
