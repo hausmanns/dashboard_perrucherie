@@ -1,0 +1,17 @@
+# Keep the build context small and the image clean.
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.DS_Store
+
+# The database must never be baked into the image — it is bind-mounted
+# from ./data at runtime (see docker-compose.yml).
+data/
+
+# Docs and local launcher are not needed inside the image.
+*.md
+run.sh
+docker-compose.yml
+.dockerignore

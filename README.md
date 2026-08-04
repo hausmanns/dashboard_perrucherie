@@ -12,6 +12,24 @@ API REST documentée (voir `AGENTS.md` et `/docs`).
 
 ## Lancer
 
+### Avec Docker (recommandé — aucune dépendance locale)
+
+```bash
+docker compose up -d --build
+```
+
+Le dashboard tourne sur `http://localhost:8000` et `http://<ip-locale>:8000`
+pour les autres appareils du réseau. La base SQLite reste un fichier normal
+dans `./data` (monté dans le conteneur) : elle continue de voyager avec git.
+
+Après un `git pull` sur une autre machine :
+
+```bash
+docker compose up -d --build   # rebuild + relance, données déjà là
+```
+
+### Sans Docker
+
 ```bash
 ./run.sh
 ```
@@ -31,10 +49,13 @@ Ouvrez l'URL « Réseau » depuis n'importe quel appareil connecté au même Wi-
 Tout est portable, **base de données incluse** (`data/dashboard.db` est versionnée) :
 
 ```bash
-git clone <repo> && cd dashboard_perrucherie && ./run.sh
+git clone <repo> && cd dashboard_perrucherie && docker compose up -d --build
 ```
 
-Un simple `git pull` ailleurs récupère code **et** données.
+(ou `./run.sh` si Docker n'est pas disponible — Python 3.10+ requis dans ce cas)
+
+Un simple `git pull` ailleurs récupère code **et** données ; un
+`docker compose up -d --build` applique les changements.
 
 ## API pour agents
 

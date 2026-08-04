@@ -26,12 +26,30 @@ without touching the frontend or the database directly.
 
 ## Run
 
+With Docker (preferred — no local Python needed):
+
+```bash
+docker compose up -d --build     # builds image, serves on 0.0.0.0:8000
+PORT=9000 docker compose up -d   # custom host port
+```
+
+Without Docker:
+
 ```bash
 ./run.sh            # creates .venv, installs deps, serves on 0.0.0.0:8000
 PORT=9000 ./run.sh  # custom port
 ```
 
 Then open `http://<host-ip>:8000` from any device on the network.
+
+### Docker specifics
+
+- Single service, single port (`${PORT:-8000}:8000`). No other configuration.
+- `./data` is **bind-mounted** into the container at `/app/data`: the SQLite
+  DB stays a normal file in the repo checkout and keeps travelling with git.
+  Never bake the DB into the image (`data/` is in `.dockerignore`).
+- `restart: unless-stopped` is set, so the dashboard survives host reboots.
+- After a `git pull`: `docker compose up -d --build` to apply code changes.
 
 ## Project layout
 
@@ -47,7 +65,10 @@ static/
   style.css          theme (dark botanical)
   app.js             all frontend logic, fetch-based
 data/dashboard.db    SQLite data (committed, portable)
-run.sh               one-command launcher
+Dockerfile           all-in-one image (python:3.12-slim + uvicorn)
+docker-compose.yml   single service, port mapping, ./data bind mount
+.dockerignore        keeps .venv/data/docs out of the image
+run.sh               one-command launcher (no-Docker fallback)
 ```
 
 ## Agent integration (reading/writing data)
@@ -103,6 +124,8 @@ locally: `http://localhost:8000`.
 
 - No machine-specific paths, no hardcoded IPs.
 - Everything needed at runtime must be in the repo or installable from
-  `requirements.txt` (`.venv` is created by `run.sh`).
+  `requirements.txt` (Docker build) or via `.venv` (`run.sh`).
 - The SQLite DB travels with the repo — be careful with schema changes; they
   must be backward-compatible so a `git pull` on another machine keeps working.
+- The DB must never be baked into the Docker image; it is bind-mounted from
+  `./data` at runtime.

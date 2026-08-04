@@ -1,0 +1,21 @@
+# Dashboard de la Perrucherie — one service, one port, DB bind-mounted.
+#
+#   docker compose up --build        # build + start (foreground)
+#   docker compose up -d --build     # build + start (background)
+#   PORT=9000 docker compose up -d   # custom host port
+#
+# After a `git pull` on another machine: `docker compose up -d --build`
+# and the new code + the pulled database are live.
+
+services:
+  dashboard:
+    build: .
+    container_name: perrucherie
+    ports:
+      # host:container — change the left side via PORT if 8000 is taken
+      - "${PORT:-8000}:8000"
+    volumes:
+      # The SQLite DB stays a real file in this repo checkout, so it keeps
+      # travelling with git commits/pulls. Container is disposable, data is not.
+      - ./data:/app/data
+    restart: unless-stopped
