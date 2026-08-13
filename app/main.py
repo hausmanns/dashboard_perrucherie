@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, get_conn, init_db
+from . import bot
 from .routers import grocery, meals, plants
 
 STATIC_DIR = BASE_DIR / "static"
@@ -31,11 +32,13 @@ app = FastAPI(
 app.include_router(plants.router)
 app.include_router(meals.router)
 app.include_router(grocery.router)
+app.include_router(bot.router)
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    bot.start()
 
 
 @app.get("/api/summary", tags=["agents"])

@@ -22,6 +22,10 @@ local network. Current features:
    from the ingredients of every dish used in a meal plan (duplicates merged,
    quantities summed). Marking an item as bought moves it into the **fridge**
    inventory.
+4. **Telegram bot** — general-purpose notification channel. First feature:
+   daily **watering reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`)
+   sent to a Telegram chat, plus an interactive `/plantes` command. Setup doc:
+   `TELEGRAM_BOT.md`. No LLM involved — pure scheduled checks.
 
 The architecture is deliberately **agent-first**: everything the UI can do is
 exposed through a plain REST/JSON API, so agents can read and write all data
@@ -67,10 +71,13 @@ Then open `http://<host-ip>:8000` from any device on the network.
 ```
 app/
   main.py            FastAPI app, /api/summary, static serving
-  config.py          env/.env config (OPENROUTER_API_KEY, OPENROUTER_MODEL)
+  config.py          env/.env config (OPENROUTER_API_KEY, OPENROUTER_MODEL,
+                     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_TZ)
   vision.py          OpenRouter vision calls → plant & dish identification (strict JSON)
   photos.py          shared photo upload/claim helpers (plants + dishes)
   database.py        SQLite connection + schema (init_db, additive migrations)
+  telegram.py        generic Telegram module (send, commands, polling)
+  bot.py             feature wiring (watering reminders + /plantes) + APScheduler cron
   routers/
     plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
     meals.py         /api/dishes*, /api/meal-plans* (grid entries, dish photo + /identify)
@@ -120,6 +127,7 @@ locally: `http://localhost:8000`.
 | Generate list from a meal plan | `POST /api/grocery/from-plan` body `{"plan_id"}` (replaces that plan's items, keeps manual ones) |
 | Mark item as bought → fridge | `POST /api/grocery/{id}/buy` |
 | Fridge inventory | `GET` / `POST /api/fridge`, `PUT` / `DELETE /api/fridge/{id}` |
+| Trigger Telegram watering check | `POST /api/bot/watering-check` (sends the summary to the chat now) |
 
 ### Conventions agents must know
 
@@ -152,6 +160,11 @@ locally: `http://localhost:8000`.
 - UI copy is in **French**; code, identifiers and docs in English.
 - When adding an entry, use upsert semantics (`PUT .../entry`) — don't insert
   duplicates; the DB enforces uniqueness per cell.
+- **Telegram bot**: a generic module (`app/telegram.py`) + feature wiring
+  (`app/bot.py`). Features register cron jobs with `bot.add_cron_job(func,
+  hour, minute)` (daily, server-local time or `TELEGRAM_TZ`) and commands with
+  `telegram.register_command("/cmd", handler)`. The scheduler lives inside the
+  app process, so it starts/stops with the container. Setup: `TELEGRAM_BOT.md`.
 
 ## Coding conventions
 

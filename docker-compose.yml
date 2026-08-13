@@ -23,4 +23,8 @@ services:
       # automatically for interpolation, so just put your key in .env.
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemini-2.5-flash}
+      # Telegram bot (watering reminders at 09:00 & 21:00).
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_TZ=${TELEGRAM_TZ:-}
     restart: unless-stopped
