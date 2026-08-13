@@ -13,7 +13,15 @@ local network. Current features:
    (via OpenRouter) pre-fills the new-plant form; the photo is saved and
    shown on the plant card.
 2. **Meal prep** — a dish library + multi-week meal plans on a
-   `weeks × 7 days × meals-per-day` grid.
+   `weeks × 7 days × meals-per-day` grid. Dishes can carry a **photo** and an
+   **ingredient list**, both pre-fillable by an agentic **AI dish
+   identification** button (snap a photo of the dish; the vision LLM fills
+   name, category, prep time, ingredients, notes and attaches the photo).
+3. **Groceries & fridge** — a grocery list with two kinds of items:
+   **manual** items (plan-independent list) and **plan-generated** items built
+   from the ingredients of every dish used in a meal plan (duplicates merged,
+   quantities summed). Marking an item as bought moves it into the **fridge**
+   inventory.
 
 The architecture is deliberately **agent-first**: everything the UI can do is
 exposed through a plain REST/JSON API, so agents can read and write all data
@@ -60,13 +68,15 @@ Then open `http://<host-ip>:8000` from any device on the network.
 app/
   main.py            FastAPI app, /api/summary, static serving
   config.py          env/.env config (OPENROUTER_API_KEY, OPENROUTER_MODEL)
-  vision.py          OpenRouter vision call → plant identification (strict JSON)
+  vision.py          OpenRouter vision calls → plant & dish identification (strict JSON)
+  photos.py          shared photo upload/claim helpers (plants + dishes)
   database.py        SQLite connection + schema (init_db, additive migrations)
   routers/
     plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
-    meals.py         /api/dishes*, /api/meal-plans* (grid entries)
+    meals.py         /api/dishes*, /api/meal-plans* (grid entries, dish photo + /identify)
+    grocery.py       /api/grocery*, /api/fridge* (list, /from-plan, /buy → fridge)
 static/
-  index.html         SPA shell (3 views: Accueil / Plantes / Repas)
+  index.html         SPA shell (4 views: Accueil / Plantes / Repas / Courses)
   style.css          theme (dark botanical)
   app.js             all frontend logic, fetch-based
 data/dashboard.db    SQLite data (committed, portable)
@@ -97,12 +107,19 @@ locally: `http://localhost:8000`.
 | List / create plants | `GET` / `POST /api/plants` |
 | Get / update / delete plant | `GET` / `PUT` / `DELETE /api/plants/{id}` |
 | Record a watering | `POST /api/plants/{id}/water` body `{}` or `{"watered_at": ..., "note": ...}` |
+| Water all plants at once (shared timestamp) | `POST /api/plants/water-all` body `{}` or `{"watered_at": ..., "note": ...}` |
 | Identify plant from photo | `POST /api/plants/identify` multipart `file` (JPEG/PNG/WebP, ≤ 8 MB) → `{name, species, watering_frequency_days, notes, photo_token}` |
 | Get a plant's photo | `GET /api/plants/{id}/photo` (404 if none) |
 | Dish library | `GET` / `POST /api/dishes`, `PUT` / `DELETE /api/dishes/{id}` |
+| Identify dish from photo | `POST /api/dishes/identify` multipart `file` → `{name, category, prep_time_minutes, ingredients, notes, photo_token}` |
+| Get a dish's photo | `GET /api/dishes/{id}/photo` (404 if none) |
 | Meal plans | `GET` / `POST /api/meal-plans`, `PUT` / `DELETE /api/meal-plans/{id}` |
 | Full plan grid | `GET /api/meal-plans/{id}` |
 | Assign a dish to a cell | `PUT /api/meal-plans/{id}/entry` body `{"week_index", "day_index", "slot_index", "dish_id"}` (`dish_id: null` clears) |
+| Grocery list | `GET` / `POST /api/grocery`, `PUT` / `DELETE /api/grocery/{id}` |
+| Generate list from a meal plan | `POST /api/grocery/from-plan` body `{"plan_id"}` (replaces that plan's items, keeps manual ones) |
+| Mark item as bought → fridge | `POST /api/grocery/{id}/buy` |
+| Fridge inventory | `GET` / `POST /api/fridge`, `PUT` / `DELETE /api/fridge/{id}` |
 
 ### Conventions agents must know
 
@@ -116,7 +133,20 @@ locally: `http://localhost:8000`.
   `plant_<id>.<ext>`). Requires `OPENROUTER_API_KEY` (env or `.env`);
   the model is configurable via `OPENROUTER_MODEL`
   (default `google/gemini-2.5-flash`). Photos live in `data/photos/` and are
-  committed like the DB; deleting a plant deletes its photo.
+  committed like the DB; deleting a plant deletes its photo. The same flow
+  applies to dishes (`POST /api/dishes/identify`, `photo` field on the dish,
+  `dish_<id>.<ext>`).
+- **Dish ingredients** are stored as a plain text field, one
+  `"quantity + name"` line per ingredient (e.g. `400 g de riz basmati`) —
+  this is what the dish identification returns and what
+  `POST /api/grocery/from-plan` parses. Keep that format when writing
+  ingredients.
+- **Grocery items** have a `source`: `manual` (plan-independent) or `plan`
+  (regenerated from a meal plan's dish ingredients; `plan_id` is set and
+  `dishes` lists which dishes need the item). `from-plan` only replaces
+  items of its own plan — manual items are never touched. `POST
+  /api/grocery/{id}/buy` deletes the grocery item and inserts it into
+  `fridge_items` (source `grocery`).
 - Meal-plan grid coordinates are 1-indexed: `week_index` 1..weeks,
   `day_index` 1..7 (1 = **lundi**), `slot_index` 1..meals_per_day.
 - UI copy is in **French**; code, identifiers and docs in English.

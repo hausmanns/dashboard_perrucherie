@@ -1,7 +1,6 @@
 """Plants module: tracking, watering schedules, due/overdue detection, history."""
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,16 +10,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..database import PHOTOS_DIR, get_conn, rows_to_dicts
+from ..photos import claim_photo, delete_photo, read_image_upload, save_tmp_photo
 from ..vision import IdentificationError, identify_plant
 
 router = APIRouter(prefix="/api/plants", tags=["plants"])
-
-ALLOWED_IMAGE_TYPES = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-}
-MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8 MB
 
 
 class PlantIn(BaseModel):
@@ -83,28 +76,11 @@ def create_plant(plant: PlantIn):
              plant.last_watered_at, plant.notes),
         )
         plant_id = cur.lastrowid
-        photo = _claim_photo(plant.photo, plant_id)
+        photo = claim_photo(plant.photo, "plant", plant_id)
         if photo:
             conn.execute("UPDATE plants SET photo = ? WHERE id = ?", (photo, plant_id))
         row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
     return _enrich(dict(row))
-
-
-def _claim_photo(token: Optional[str], plant_id: int) -> Optional[str]:
-    """Move a temp photo from /identify to its final plant_{id} name. Returns filename or None."""
-    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
-        return None
-    for ext in ALLOWED_IMAGE_TYPES.values():
-        tmp = PHOTOS_DIR / f"tmp_{token}{ext}"
-        if tmp.exists():
-            final_name = f"plant_{plant_id}{ext}"
-            tmp.replace(PHOTOS_DIR / final_name)
-            # Remove any previous photo with a different extension.
-            for old in PHOTOS_DIR.glob(f"plant_{plant_id}.*"):
-                if old.name != final_name:
-                    old.unlink()
-            return final_name
-    return None
 
 
 @router.post("/identify")
@@ -114,12 +90,7 @@ async def identify(file: UploadFile = File(...)):
     Returns suggested fields to pre-fill the plant form, plus a `photo_token`:
     pass it back as `photo` when creating/updating the plant to attach the photo.
     """
-    ext = ALLOWED_IMAGE_TYPES.get(file.content_type or "")
-    if not ext:
-        raise HTTPException(415, "Format d'image non supporté (JPEG, PNG ou WebP attendu)")
-    content = await file.read()
-    if len(content) > MAX_PHOTO_BYTES:
-        raise HTTPException(413, "Image trop lourde (8 Mo max)")
+    content, ext = await read_image_upload(file)
 
     try:
         suggestion = await identify_plant(content, file.content_type)
@@ -127,7 +98,7 @@ async def identify(file: UploadFile = File(...)):
         raise HTTPException(502, str(e))
 
     token = uuid.uuid4().hex
-    (PHOTOS_DIR / f"tmp_{token}{ext}").write_bytes(content)
+    save_tmp_photo(content, ext, token)
     return {**suggestion, "photo_token": token}
 
 
@@ -176,7 +147,7 @@ def update_plant(plant_id: int, plant: PlantIn):
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Plante introuvable")
-        photo = _claim_photo(plant.photo, plant_id)
+        photo = claim_photo(plant.photo, "plant", plant_id)
         if photo:
             conn.execute("UPDATE plants SET photo = ? WHERE id = ?", (photo, plant_id))
         row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
@@ -190,10 +161,26 @@ def delete_plant(plant_id: int):
         cur = conn.execute("DELETE FROM plants WHERE id = ?", (plant_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "Plante introuvable")
-    if row and row["photo"]:
-        path = PHOTOS_DIR / row["photo"]
-        if path.exists():
-            path.unlink()
+    if row:
+        delete_photo(row["photo"])
+
+
+@router.post("/water-all", status_code=201)
+def water_all_plants(event: WaterEvent):
+    """Record a watering for every plant at once, with a single shared timestamp."""
+    watered_at = event.watered_at or datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM plants").fetchall()]
+        conn.executemany(
+            "INSERT INTO watering_events (plant_id, watered_at, note) VALUES (?, ?, ?)",
+            [(pid, watered_at, event.note) for pid in ids],
+        )
+        conn.executemany(
+            "UPDATE plants SET last_watered_at = ? WHERE id = ?",
+            [(watered_at, pid) for pid in ids],
+        )
+        rows = rows_to_dicts(conn.execute("SELECT * FROM plants ORDER BY name").fetchall())
+    return {"watered_at": watered_at, "count": len(ids), "plants": [_enrich(r) for r in rows]}
 
 
 @router.post("/{plant_id}/water", status_code=201)

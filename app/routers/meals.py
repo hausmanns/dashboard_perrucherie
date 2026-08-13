@@ -1,12 +1,16 @@
 """Meal prep module: dish library + multi-week meal plans on a days x slots grid."""
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..database import get_conn, rows_to_dicts
+from ..database import PHOTOS_DIR, get_conn, rows_to_dicts
+from ..photos import claim_photo, delete_photo, read_image_upload, save_tmp_photo
+from ..vision import IdentificationError, identify_dish
 
 router = APIRouter(prefix="/api", tags=["meals"])
 
@@ -17,6 +21,8 @@ class DishIn(BaseModel):
     prep_time_minutes: Optional[int] = None
     recipe_url: str = ""
     notes: str = ""
+    ingredients: str = ""  # une ligne par ingrédient : "400 g de riz basmati"
+    photo: Optional[str] = None  # token renvoyé par POST /dishes/identify
 
 
 class MealPlanIn(BaseModel):
@@ -46,30 +52,76 @@ def list_dishes():
 def create_dish(dish: DishIn):
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO dishes (name, category, prep_time_minutes, recipe_url, notes) VALUES (?, ?, ?, ?, ?)",
-            (dish.name, dish.category, dish.prep_time_minutes, dish.recipe_url, dish.notes),
+            """INSERT INTO dishes (name, category, prep_time_minutes, recipe_url, notes, ingredients)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (dish.name, dish.category, dish.prep_time_minutes, dish.recipe_url, dish.notes, dish.ingredients),
         )
-        return dict(conn.execute("SELECT * FROM dishes WHERE id = ?", (cur.lastrowid,)).fetchone())
+        dish_id = cur.lastrowid
+        photo = claim_photo(dish.photo, "dish", dish_id)
+        if photo:
+            conn.execute("UPDATE dishes SET photo = ? WHERE id = ?", (photo, dish_id))
+        return dict(conn.execute("SELECT * FROM dishes WHERE id = ?", (dish_id,)).fetchone())
 
 
 @router.put("/dishes/{dish_id}")
 def update_dish(dish_id: int, dish: DishIn):
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE dishes SET name=?, category=?, prep_time_minutes=?, recipe_url=?, notes=? WHERE id=?",
-            (dish.name, dish.category, dish.prep_time_minutes, dish.recipe_url, dish.notes, dish_id),
+            """UPDATE dishes SET name=?, category=?, prep_time_minutes=?, recipe_url=?, notes=?, ingredients=?
+               WHERE id=?""",
+            (dish.name, dish.category, dish.prep_time_minutes, dish.recipe_url, dish.notes,
+             dish.ingredients, dish_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "Plat introuvable")
+        photo = claim_photo(dish.photo, "dish", dish_id)
+        if photo:
+            conn.execute("UPDATE dishes SET photo = ? WHERE id = ?", (photo, dish_id))
         return dict(conn.execute("SELECT * FROM dishes WHERE id = ?", (dish_id,)).fetchone())
 
 
 @router.delete("/dishes/{dish_id}", status_code=204)
 def delete_dish(dish_id: int):
     with get_conn() as conn:
+        row = conn.execute("SELECT photo FROM dishes WHERE id = ?", (dish_id,)).fetchone()
         cur = conn.execute("DELETE FROM dishes WHERE id = ?", (dish_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "Plat introuvable")
+    if row:
+        delete_photo(row["photo"])
+
+
+@router.post("/dishes/identify")
+async def identify_dish_photo(file: UploadFile = File(...)):
+    """Identify a dish from a photo via a vision LLM and pre-fill the dish form.
+
+    Returns {name, category, prep_time_minutes, ingredients, notes} plus a
+    `photo_token`: pass it back as `photo` when creating/updating the dish
+    to attach the photo.
+    """
+    content, ext = await read_image_upload(file)
+
+    try:
+        suggestion = await identify_dish(content, file.content_type)
+    except IdentificationError as e:
+        raise HTTPException(502, str(e))
+
+    token = uuid.uuid4().hex
+    save_tmp_photo(content, ext, token)
+    return {**suggestion, "photo_token": token}
+
+
+@router.get("/dishes/{dish_id}/photo")
+def dish_photo(dish_id: int):
+    """Serve the dish's photo, if one was attached during identification."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT photo FROM dishes WHERE id = ?", (dish_id,)).fetchone()
+    if not row or not row["photo"]:
+        raise HTTPException(404, "Pas de photo pour ce plat")
+    path = PHOTOS_DIR / row["photo"]
+    if not path.exists():
+        raise HTTPException(404, "Fichier photo introuvable")
+    return FileResponse(path)
 
 
 # ---------- Meal plans ----------

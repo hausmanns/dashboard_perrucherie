@@ -20,6 +20,7 @@
       <button class="tab active" data-view="home">🏠 Accueil</button>
       <button class="tab" data-view="plants">🌿 Plantes <span id="plants-badge" class="badge hidden"></span></button>
       <button class="tab" data-view="meals">🍽️ Repas</button>
+      <button class="tab" data-view="grocery">🛒 Courses</button>
     </nav>
     <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage">🔔</button>
   </header>
@@ -47,7 +48,10 @@
     <section id="view-plants" class="view">
       <div class="section-head">
         <h2>Mes plantes</h2>
-        <button class="btn btn-primary" id="add-plant-btn">+ Ajouter une plante</button>
+        <div class="plan-actions">
+          <button class="btn btn-primary" id="water-all-btn">💧 Tout arroser</button>
+          <button class="btn btn-primary" id="add-plant-btn">+ Ajouter une plante</button>
+        </div>
       </div>
       <div id="plants-grid" class="plants-grid"></div>
     </section>
@@ -75,6 +79,39 @@
           <div id="plan-meta" class="plan-meta"></div>
           <div id="week-tabs" class="week-tabs"></div>
           <div id="plan-grid-wrap"></div>
+        </div>
+      </div>
+    </section>
+    <!-- ================= COURSES & FRIGO ================= -->
+    <section id="view-grocery" class="view">
+      <div class="grocery-layout">
+        <div class="card">
+          <div class="section-head">
+            <h3>🛒 Liste de courses</h3>
+          </div>
+          <form id="grocery-form" class="inline-form">
+            <input id="grocery-name" required placeholder="Article (ex. Tomates)" />
+            <input id="grocery-qty" placeholder="Qté (ex. 500 g)" />
+            <button type="submit" class="btn btn-primary btn-sm">+ Ajouter</button>
+          </form>
+          <div class="plan-generate">
+            <select id="grocery-plan-select"></select>
+            <button class="btn btn-ghost btn-sm" id="grocery-generate-btn" title="Remplacer les articles du plan par les ingrédients de ses plats">🪄 Générer depuis le plan</button>
+          </div>
+          <div id="grocery-list" class="grocery-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <h3>🧊 Frigo</h3>
+          </div>
+          <form id="fridge-form" class="inline-form">
+            <input id="fridge-name" required placeholder="Article (ex. Reste de curry)" />
+            <input id="fridge-qty" placeholder="Qté" />
+            <button type="submit" class="btn btn-primary btn-sm">+ Ajouter</button>
+          </form>
+          <p class="muted fridge-hint">Les articles cochés « acheté » dans la liste de courses arrivent ici automatiquement.</p>
+          <div id="fridge-list" class="grocery-list"></div>
         </div>
       </div>
     </section>
@@ -112,6 +149,15 @@
     <form method="dialog" id="dish-form">
       <h3 id="dish-modal-title">Ajouter un plat</h3>
       <input type="hidden" id="dish-id" />
+      <input type="hidden" id="dish-photo-token" />
+      <input type="file" id="dish-photo-input" accept="image/*" capture="environment" hidden />
+      <div class="photo-id-row">
+        <img id="dish-photo-preview" class="photo-preview hidden" alt="Photo du plat" />
+        <div class="photo-id-side">
+          <button type="button" class="btn btn-ghost btn-sm" id="dish-photo-btn">📷 Identifier par photo</button>
+          <small id="dish-photo-status" class="muted"></small>
+        </div>
+      </div>
       <label>Nom *<input id="dish-name" required placeholder="Curry de pois chiches" /></label>
       <label>Catégorie
         <select id="dish-category">
@@ -123,6 +169,9 @@
       </label>
       <label>Temps de préparation (min)<input id="dish-prep" type="number" min="0" placeholder="30" /></label>
       <label>Lien recette<input id="dish-url" type="url" placeholder="https://…" /></label>
+      <label>Ingrédients <small class="muted">(un par ligne, avec quantité — utilisés pour la liste de courses)</small>
+        <textarea id="dish-ingredients" rows="4" placeholder="400 g de pois chiches&#10;1 oignon&#10;200 ml de lait de coco"></textarea>
+      </label>
       <label>Notes<textarea id="dish-notes" rows="2"></textarea></label>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" data-close>Annuler</button>

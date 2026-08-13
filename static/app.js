@@ -27,6 +27,8 @@ const state = {
   plants: [],
   dishes: [],
   plans: [],
+  grocery: [],
+  fridge: [],
   currentPlanId: null,
   currentWeek: 1,
   notified: new Set(), // plant ids already notified this session
@@ -112,7 +114,9 @@ async function loadHome() {
       <div class="stat"><div class="num">${s.plants.total}</div><div class="lbl">Plantes</div></div>
       <div class="stat"><div class="num">${s.plants.due_count}</div><div class="lbl">Arrosages dus</div></div>
       <div class="stat"><div class="num">${s.meals.dishes_in_library}</div><div class="lbl">Plats</div></div>
-      <div class="stat"><div class="num">${s.meals.active_plan ? s.meals.active_plan.weeks : 0}</div><div class="lbl">Semaines planifiées</div></div>`;
+      <div class="stat"><div class="num">${s.meals.active_plan ? s.meals.active_plan.weeks : 0}</div><div class="lbl">Semaines planifiées</div></div>
+      <div class="stat"><div class="num">${s.grocery.items_on_list}</div><div class="lbl">Courses à faire</div></div>
+      <div class="stat"><div class="num">${s.grocery.fridge_items}</div><div class="lbl">Dans le frigo</div></div>`;
   } catch (e) { toast(e.message, true); }
 }
 
@@ -173,6 +177,17 @@ async function waterPlant(id) {
     await api.post(`/api/plants/${id}/water`, {});
     state.notified.delete(id);
     toast("Plante arrosée 💧");
+    await Promise.all([loadPlants(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function waterAllPlants() {
+  if (!state.plants.length) return toast("Aucune plante à arroser", true);
+  if (!confirm(`Marquer les ${state.plants.length} plantes comme arrosées maintenant ?`)) return;
+  try {
+    const res = await api.post("/api/plants/water-all", {});
+    state.notified.clear();
+    toast(`${res.count} plantes arrosées 💧`);
     await Promise.all([loadPlants(), loadHome()]);
   } catch (e) { toast(e.message, true); }
 }
@@ -296,6 +311,7 @@ async function deletePlant(id) {
 }
 
 $("#add-plant-btn").addEventListener("click", () => openPlantModal());
+$("#water-all-btn").addEventListener("click", waterAllPlants);
 
 /* ---------------- Notifications ---------------- */
 
@@ -339,24 +355,33 @@ function renderDishes() {
     list.innerHTML = `<p class="muted">Ajoutez vos plats favoris ici, puis placez-les sur le planning.</p>`;
     return;
   }
-  list.innerHTML = state.dishes.map((d) => `
+  list.innerHTML = state.dishes.map((d) => {
+    const ingCount = (d.ingredients || "").split("\n").filter((l) => l.trim()).length;
+    return `
     <div class="dish-item">
+      ${d.photo ? `<img class="dish-thumb" src="/api/dishes/${d.id}/photo" alt="${d.name}" loading="lazy" />` : ""}
       <div>
         ${d.name}
-        <small>${CAT_LABELS[d.category] || d.category}${d.prep_time_minutes ? " · " + d.prep_time_minutes + " min" : ""}</small>
+        <small>${CAT_LABELS[d.category] || d.category}${d.prep_time_minutes ? " · " + d.prep_time_minutes + " min" : ""}${ingCount ? ` · ${ingCount} ingrédient${ingCount > 1 ? "s" : ""}` : ""}</small>
       </div>
       <div>
         ${d.recipe_url ? `<a class="icon-btn" href="${d.recipe_url}" target="_blank" title="Recette">🔗</a>` : ""}
         <button class="icon-btn" onclick="openDishModal(${d.id})" title="Modifier">✏️</button>
         <button class="icon-btn" onclick="deleteDish(${d.id})" title="Supprimer">🗑️</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function openDishModal(id = null) {
   const form = $("#dish-form");
   form.reset();
   $("#dish-id").value = id || "";
+  $("#dish-photo-token").value = "";
+  $("#dish-photo-status").textContent = "";
+  const preview = $("#dish-photo-preview");
+  preview.classList.add("hidden");
+  preview.removeAttribute("src");
   $("#dish-modal-title").textContent = id ? "Modifier le plat" : "Ajouter un plat";
   if (id) {
     const d = state.dishes.find((x) => x.id === id);
@@ -365,11 +390,57 @@ function openDishModal(id = null) {
       $("#dish-category").value = d.category;
       $("#dish-prep").value = d.prep_time_minutes ?? "";
       $("#dish-url").value = d.recipe_url;
+      $("#dish-ingredients").value = d.ingredients || "";
       $("#dish-notes").value = d.notes;
+      if (d.photo) {
+        preview.src = `/api/dishes/${d.id}/photo`;
+        preview.classList.remove("hidden");
+      }
     }
   }
   $("#dish-modal").showModal();
 }
+
+/* ---- Identification du plat par photo (vision LLM) ---- */
+
+$("#dish-photo-btn").addEventListener("click", () => $("#dish-photo-input").click());
+
+$("#dish-photo-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ""; // allow re-picking the same file
+  if (!file) return;
+
+  const status = $("#dish-photo-status");
+  const btn = $("#dish-photo-btn");
+  const preview = $("#dish-photo-preview");
+  try {
+    const blob = await downscaleImage(file);
+    preview.src = URL.createObjectURL(blob);
+    preview.classList.remove("hidden");
+    status.textContent = "🔍 Identification en cours…";
+    btn.disabled = true;
+
+    const fd = new FormData();
+    fd.append("file", blob, "plat.jpg");
+    const res = await fetch("/api/dishes/identify", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `Erreur ${res.status}`);
+
+    if (data.name) $("#dish-name").value = data.name;
+    if (data.category) $("#dish-category").value = data.category;
+    if (data.prep_time_minutes) $("#dish-prep").value = data.prep_time_minutes;
+    if (data.ingredients) $("#dish-ingredients").value = data.ingredients;
+    if (data.notes) $("#dish-notes").value = data.notes;
+    $("#dish-photo-token").value = data.photo_token || "";
+    status.textContent = "✅ Plat identifié — vérifiez et ajustez si besoin.";
+  } catch (err) {
+    status.textContent = "";
+    preview.classList.add("hidden");
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $("#dish-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -380,7 +451,9 @@ $("#dish-form").addEventListener("submit", async (e) => {
     category: $("#dish-category").value,
     prep_time_minutes: prep ? parseInt(prep, 10) : null,
     recipe_url: $("#dish-url").value.trim(),
+    ingredients: $("#dish-ingredients").value.trim(),
     notes: $("#dish-notes").value.trim(),
+    photo: $("#dish-photo-token").value || null,
   };
   try {
     if (id) await api.put(`/api/dishes/${id}`, payload);
@@ -422,6 +495,13 @@ function renderPlanSelect() {
   sel.innerHTML = state.plans.length
     ? state.plans.map((p) => `<option value="${p.id}" ${p.id === state.currentPlanId ? "selected" : ""}>${p.name}</option>`).join("")
     : `<option value="">Aucun plan</option>`;
+  const gsel = $("#grocery-plan-select");
+  if (gsel) {
+    const active = (state.plans.find((p) => p.active) || state.plans[0])?.id;
+    gsel.innerHTML = state.plans.length
+      ? state.plans.map((p) => `<option value="${p.id}" ${p.id === active ? "selected" : ""}>${p.name}</option>`).join("")
+      : `<option value="">Aucun plan</option>`;
+  }
 }
 
 $("#plan-select").addEventListener("change", (e) => {
@@ -569,10 +649,123 @@ async function assignDish(dayIndex, slotIndex, dishId) {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------------- Courses & Frigo ---------------- */
+
+async function loadGrocery() {
+  try {
+    state.grocery = await api.get("/api/grocery");
+    renderGrocery();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadFridge() {
+  try {
+    state.fridge = await api.get("/api/fridge");
+    renderFridge();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderGrocery() {
+  const list = $("#grocery-list");
+  if (state.grocery.length === 0) {
+    list.innerHTML = `<p class="muted">Liste vide. Ajoutez des articles ou générez-la depuis un plan de repas.</p>`;
+    return;
+  }
+  list.innerHTML = state.grocery.map((g) => `
+    <div class="grocery-item">
+      <div class="info">
+        <strong>${g.name}</strong>
+        <small>${[g.quantity, g.source === "plan" ? `🍽️ ${g.dishes || "plan"}` : "manuel"].filter(Boolean).join(" · ")}</small>
+      </div>
+      <div class="grocery-actions">
+        <button class="btn btn-primary btn-sm" onclick="buyGroceryItem(${g.id})" title="Marquer comme acheté → frigo">✓ Acheté</button>
+        <button class="icon-btn" onclick="deleteGroceryItem(${g.id})" title="Retirer de la liste">🗑️</button>
+      </div>
+    </div>`).join("");
+}
+
+function renderFridge() {
+  const list = $("#fridge-list");
+  if (state.fridge.length === 0) {
+    list.innerHTML = `<p class="muted">Frigo vide pour l'instant.</p>`;
+    return;
+  }
+  list.innerHTML = state.fridge.map((f) => `
+    <div class="grocery-item">
+      <div class="info">
+        <strong>${f.name}</strong>
+        <small>${[f.quantity, f.source === "grocery" ? "acheté" : "ajouté", fmtDate(f.added_at)].filter(Boolean).join(" · ")}</small>
+      </div>
+      <div class="grocery-actions">
+        <button class="icon-btn" onclick="deleteFridgeItem(${f.id})" title="Consommé / retirer">🗑️</button>
+      </div>
+    </div>`).join("");
+}
+
+$("#grocery-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api.post("/api/grocery", {
+      name: $("#grocery-name").value.trim(),
+      quantity: $("#grocery-qty").value.trim(),
+    });
+    e.target.reset();
+    toast("Article ajouté 🛒");
+    await Promise.all([loadGrocery(), loadHome()]);
+  } catch (e2) { toast(e2.message, true); }
+});
+
+$("#fridge-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api.post("/api/fridge", {
+      name: $("#fridge-name").value.trim(),
+      quantity: $("#fridge-qty").value.trim(),
+    });
+    e.target.reset();
+    toast("Ajouté au frigo 🧊");
+    await Promise.all([loadFridge(), loadHome()]);
+  } catch (e2) { toast(e2.message, true); }
+});
+
+async function buyGroceryItem(id) {
+  try {
+    await api.post(`/api/grocery/${id}/buy`, {});
+    toast("Acheté — direction le frigo 🧊");
+    await Promise.all([loadGrocery(), loadFridge(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteGroceryItem(id) {
+  try {
+    await api.del(`/api/grocery/${id}`);
+    await Promise.all([loadGrocery(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteFridgeItem(id) {
+  try {
+    await api.del(`/api/fridge/${id}`);
+    await Promise.all([loadFridge(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+$("#grocery-generate-btn").addEventListener("click", async () => {
+  const planId = parseInt($("#grocery-plan-select").value, 10);
+  if (!planId) return toast("Créez d'abord un plan de repas (onglet Repas)", true);
+  if (!confirm("Remplacer les articles générés depuis ce plan ? (vos articles manuels sont conservés)")) return;
+  try {
+    const res = await api.post("/api/grocery/from-plan", { plan_id: planId });
+    toast(res.count ? `${res.count} ingrédients ajoutés depuis « ${res.plan_name} » 🪄`
+                    : "Aucun ingrédient trouvé — remplissez les ingrédients des plats du plan.");
+    await Promise.all([loadGrocery(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+});
+
 /* ---------------- Init ---------------- */
 
 (async function init() {
-  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans()]);
+  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans(), loadGrocery(), loadFridge()]);
   checkNotifications();
   setInterval(() => { loadPlants(); loadHome(); checkNotifications(); }, 60_000);
 })();

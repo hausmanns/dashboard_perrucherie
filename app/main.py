@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, get_conn, init_db
-from .routers import meals, plants
+from .routers import grocery, meals, plants
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -30,6 +30,7 @@ app = FastAPI(
 
 app.include_router(plants.router)
 app.include_router(meals.router)
+app.include_router(grocery.router)
 
 
 @app.on_event("startup")
@@ -51,6 +52,8 @@ def summary():
         plan = conn.execute("SELECT * FROM meal_plans WHERE active = 1 ORDER BY start_date DESC LIMIT 1").fetchone()
         total_plants = conn.execute("SELECT COUNT(*) c FROM plants").fetchone()["c"]
         total_dishes = conn.execute("SELECT COUNT(*) c FROM dishes").fetchone()["c"]
+        total_grocery = conn.execute("SELECT COUNT(*) c FROM grocery_items").fetchone()["c"]
+        total_fridge = conn.execute("SELECT COUNT(*) c FROM fridge_items").fetchone()["c"]
 
     if plan:
         start = date.fromisoformat(plan["start_date"])
@@ -79,6 +82,10 @@ def summary():
             "active_plan": dict(plan) if plan else None,
             "today": meals_today,
             "dishes_in_library": total_dishes,
+        },
+        "grocery": {
+            "items_on_list": total_grocery,
+            "fridge_items": total_fridge,
         },
     }
 

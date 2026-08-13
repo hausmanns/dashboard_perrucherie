@@ -62,6 +62,24 @@ CREATE TABLE IF NOT EXISTS meal_plan_entries (
     dish_id    INTEGER REFERENCES dishes(id) ON DELETE SET NULL,
     UNIQUE (plan_id, week_index, day_index, slot_index)
 );
+
+CREATE TABLE IF NOT EXISTS grocery_items (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    quantity   TEXT DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'manual',  -- manual | plan
+    plan_id    INTEGER REFERENCES meal_plans(id) ON DELETE CASCADE,
+    dishes     TEXT DEFAULT '',                 -- noms des plats concernés (items 'plan')
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS fridge_items (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT NOT NULL,
+    quantity TEXT DEFAULT '',
+    source   TEXT NOT NULL DEFAULT 'manual',    -- manual | grocery (acheté depuis la liste)
+    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -78,6 +96,13 @@ def _migrate(conn) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(plants)")}
     if "photo" not in cols:
         conn.execute("ALTER TABLE plants ADD COLUMN photo TEXT")  # filename in data/photos/
+
+    dish_cols = {r["name"] for r in conn.execute("PRAGMA table_info(dishes)")}
+    if "photo" not in dish_cols:
+        conn.execute("ALTER TABLE dishes ADD COLUMN photo TEXT")  # filename in data/photos/
+    if "ingredients" not in dish_cols:
+        # Une ligne par ingrédient, quantité incluse : "400 g de riz basmati"
+        conn.execute("ALTER TABLE dishes ADD COLUMN ingredients TEXT DEFAULT ''")
 
 
 @contextmanager
