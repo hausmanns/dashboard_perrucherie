@@ -18,10 +18,10 @@ local network. Current features:
    identification** button (snap a photo of the dish; the vision LLM fills
    name, category, prep time, ingredients, notes and attaches the photo).
 3. **Groceries & fridge** — a grocery list with two kinds of items:
-   **manual** items (plan-independent list) and **plan-generated** items built
-   from the ingredients of every dish used in a meal plan (duplicates merged,
-   quantities summed). Marking an item as bought moves it into the **fridge**
-   inventory.
+   **manual** items (plan-independent list) and **generated** items built
+   from the ingredients of every dish used in a meal plan, or from a single
+   dish on demand (duplicates merged, quantities summed). Marking an item as
+   bought moves it into the **fridge** inventory.
 4. **Telegram bot** — general-purpose notification channel. First feature:
    daily **watering reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`)
    sent to a Telegram chat, plus an interactive `/plantes` command. Setup doc:
@@ -125,6 +125,7 @@ locally: `http://localhost:8000`.
 | Assign a dish to a cell | `PUT /api/meal-plans/{id}/entry` body `{"week_index", "day_index", "slot_index", "dish_id"}` (`dish_id: null` clears) |
 | Grocery list | `GET` / `POST /api/grocery`, `PUT` / `DELETE /api/grocery/{id}` |
 | Generate list from a meal plan | `POST /api/grocery/from-plan` body `{"plan_id"}` (replaces that plan's items, keeps manual ones) |
+| Add a dish's ingredients to the list | `POST /api/grocery/from-dish` body `{"dish_id"}` (replaces that dish's items, keeps manual + plan ones) |
 | Mark item as bought → fridge | `POST /api/grocery/{id}/buy` |
 | Fridge inventory | `GET` / `POST /api/fridge`, `PUT` / `DELETE /api/fridge/{id}` |
 | Trigger Telegram watering check | `POST /api/bot/watering-check` (sends the summary to the chat now) |
@@ -149,10 +150,12 @@ locally: `http://localhost:8000`.
   this is what the dish identification returns and what
   `POST /api/grocery/from-plan` parses. Keep that format when writing
   ingredients.
-- **Grocery items** have a `source`: `manual` (plan-independent) or `plan`
+- **Grocery items** have a `source`: `manual` (plan-independent), `plan`
   (regenerated from a meal plan's dish ingredients; `plan_id` is set and
-  `dishes` lists which dishes need the item). `from-plan` only replaces
-  items of its own plan — manual items are never touched. `POST
+  `dishes` lists which dishes need the item) or `dish` (regenerated from a
+  single dish's ingredients; `dish_id` is set and `dishes` names the dish).
+  `from-plan` only replaces items of its own plan and `from-dish` only those
+  of its own dish — manual items are never touched. `POST
   /api/grocery/{id}/buy` deletes the grocery item and inserts it into
   `fridge_items` (source `grocery`).
 - Meal-plan grid coordinates are 1-indexed: `week_index` 1..weeks,

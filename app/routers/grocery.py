@@ -28,6 +28,10 @@ class FromPlanIn(BaseModel):
     plan_id: int
 
 
+class FromDishIn(BaseModel):
+    dish_id: int
+
+
 # ---------- Ingredient parsing (dish ingredients → grocery items) ----------
 
 # "400 g de riz basmati" → (400, "g", "riz basmati") ; "2 oignons" → (2, "", "oignons")
@@ -67,19 +71,13 @@ def _fmt_qty(qty: float, unit: str) -> str:
     return f"{num} {unit}".strip()
 
 
-def _plan_ingredients(conn, plan_id: int) -> list[dict]:
-    """Aggregate the ingredients of all dishes placed on a meal plan.
+def _aggregate_ingredients(rows) -> list[dict]:
+    """Aggregate the parsed ingredients of a list of dish rows.
 
-    Returns one dict per distinct ingredient: {name, quantity, dishes}.
-    Duplicates are merged by (name, unit); quantities are summed when numeric.
+    Each row is a dict-like with `name` and `ingredients`. Returns one dict per
+    distinct ingredient: {name, quantity, dishes}. Duplicates are merged by
+    (name, unit); quantities are summed when numeric.
     """
-    rows = conn.execute(
-        """SELECT DISTINCT d.id, d.name, d.ingredients
-           FROM meal_plan_entries e JOIN dishes d ON d.id = e.dish_id
-           WHERE e.plan_id = ? AND e.dish_id IS NOT NULL""",
-        (plan_id,),
-    ).fetchall()
-
     merged: dict[tuple[str, str], dict] = {}
     for dish in rows:
         for line in (dish["ingredients"] or "").splitlines():
@@ -104,14 +102,34 @@ def _plan_ingredients(conn, plan_id: int) -> list[dict]:
     ]
 
 
+def _plan_ingredients(conn, plan_id: int) -> list[dict]:
+    """Aggregate the ingredients of all dishes placed on a meal plan."""
+    rows = conn.execute(
+        """SELECT DISTINCT d.id, d.name, d.ingredients
+           FROM meal_plan_entries e JOIN dishes d ON d.id = e.dish_id
+           WHERE e.plan_id = ? AND e.dish_id IS NOT NULL""",
+        (plan_id,),
+    ).fetchall()
+    return _aggregate_ingredients(rows)
+
+
+def _dish_ingredients(conn, dish_id: int) -> list[dict]:
+    """Aggregate the ingredients of a single dish."""
+    dish = conn.execute("SELECT id, name, ingredients FROM dishes WHERE id = ?", (dish_id,)).fetchone()
+    if not dish:
+        raise HTTPException(404, "Plat introuvable")
+    return _aggregate_ingredients([dish])
+
+
 # ---------- Grocery list ----------
 
 @router.get("/grocery")
 def list_grocery():
-    """All grocery items, plan-generated first then manual, oldest first."""
+    """All grocery items: plan- and dish-generated first, then manual, oldest first."""
     with get_conn() as conn:
         return rows_to_dicts(conn.execute(
-            "SELECT * FROM grocery_items ORDER BY source DESC, created_at"
+            """SELECT * FROM grocery_items
+               ORDER BY CASE source WHEN 'plan' THEN 0 WHEN 'dish' THEN 1 ELSE 2 END, created_at"""
         ).fetchall())
 
 
@@ -183,6 +201,33 @@ def grocery_from_plan(payload: FromPlanIn):
     return {
         "plan_id": payload.plan_id,
         "plan_name": plan["name"],
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.post("/grocery/from-dish")
+def grocery_from_dish(payload: FromDishIn):
+    """Add a single dish's ingredients to the grocery list.
+
+    Replaces the items previously generated for that dish (source='dish',
+    dish_id=…); manual and plan items are left untouched.
+    """
+    with get_conn() as conn:
+        dish = conn.execute("SELECT * FROM dishes WHERE id = ?", (payload.dish_id,)).fetchone()
+        if not dish:
+            raise HTTPException(404, "Plat introuvable")
+        conn.execute(
+            "DELETE FROM grocery_items WHERE source = 'dish' AND dish_id = ?", (payload.dish_id,)
+        )
+        items = _dish_ingredients(conn, payload.dish_id)
+        conn.executemany(
+            "INSERT INTO grocery_items (name, quantity, source, dish_id, dishes) VALUES (?, ?, 'dish', ?, ?)",
+            [(i["name"], i["quantity"], payload.dish_id, i["dishes"]) for i in items],
+        )
+    return {
+        "dish_id": payload.dish_id,
+        "dish_name": dish["name"],
         "count": len(items),
         "items": items,
     }

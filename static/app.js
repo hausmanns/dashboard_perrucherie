@@ -349,7 +349,16 @@ async function loadDishes() {
 
 const CAT_LABELS = { "petit-dej": "Petit-déj", dejeuner: "Déjeuner", diner: "Dîner", snack: "Snack" };
 
+function renderGroceryDishSelect() {
+  const sel = $("#grocery-dish-select");
+  if (!sel) return;
+  sel.innerHTML = state.dishes.length
+    ? state.dishes.map((d) => `<option value="${d.id}">${d.name}</option>`).join("")
+    : `<option value="">Aucun plat</option>`;
+}
+
 function renderDishes() {
+  renderGroceryDishSelect();
   const list = $("#dishes-list");
   if (state.dishes.length === 0) {
     list.innerHTML = `<p class="muted">Ajoutez vos plats favoris ici, puis placez-les sur le planning.</p>`;
@@ -671,17 +680,22 @@ function renderGrocery() {
     list.innerHTML = `<p class="muted">Liste vide. Ajoutez des articles ou générez-la depuis un plan de repas.</p>`;
     return;
   }
-  list.innerHTML = state.grocery.map((g) => `
+  list.innerHTML = state.grocery.map((g) => {
+    const src = g.source === "plan" ? `🍽️ ${g.dishes || "plan"}`
+      : g.source === "dish" ? `🍲 ${g.dishes || "plat"}`
+      : "manuel";
+    return `
     <div class="grocery-item">
       <div class="info">
         <strong>${g.name}</strong>
-        <small>${[g.quantity, g.source === "plan" ? `🍽️ ${g.dishes || "plan"}` : "manuel"].filter(Boolean).join(" · ")}</small>
+        <small>${[g.quantity, src].filter(Boolean).join(" · ")}</small>
       </div>
       <div class="grocery-actions">
         <button class="btn btn-primary btn-sm" onclick="buyGroceryItem(${g.id})" title="Marquer comme acheté → frigo">✓ Acheté</button>
         <button class="icon-btn" onclick="deleteGroceryItem(${g.id})" title="Retirer de la liste">🗑️</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function renderFridge() {
@@ -758,6 +772,17 @@ $("#grocery-generate-btn").addEventListener("click", async () => {
     const res = await api.post("/api/grocery/from-plan", { plan_id: planId });
     toast(res.count ? `${res.count} ingrédients ajoutés depuis « ${res.plan_name} » 🪄`
                     : "Aucun ingrédient trouvé — remplissez les ingrédients des plats du plan.");
+    await Promise.all([loadGrocery(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+});
+
+$("#grocery-dish-btn").addEventListener("click", async () => {
+  const dishId = parseInt($("#grocery-dish-select").value, 10);
+  if (!dishId) return toast("Ajoutez d'abord des plats avec des ingrédients (onglet Repas)", true);
+  try {
+    const res = await api.post("/api/grocery/from-dish", { dish_id: dishId });
+    toast(res.count ? `${res.count} ingrédients ajoutés depuis « ${res.dish_name} » 🪄`
+                    : "Aucun ingrédient — ajoutez des ingrédients à ce plat (onglet Repas).");
     await Promise.all([loadGrocery(), loadHome()]);
   } catch (e) { toast(e.message, true); }
 });

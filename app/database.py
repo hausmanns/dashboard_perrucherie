@@ -67,9 +67,10 @@ CREATE TABLE IF NOT EXISTS grocery_items (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
     quantity   TEXT DEFAULT '',
-    source     TEXT NOT NULL DEFAULT 'manual',  -- manual | plan
+    source     TEXT NOT NULL DEFAULT 'manual',  -- manual | plan | dish
     plan_id    INTEGER REFERENCES meal_plans(id) ON DELETE CASCADE,
-    dishes     TEXT DEFAULT '',                 -- noms des plats concernés (items 'plan')
+    dish_id    INTEGER REFERENCES dishes(id) ON DELETE CASCADE,
+    dishes     TEXT DEFAULT '',                 -- noms des plats concernés (items 'plan'/'dish')
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -103,6 +104,10 @@ def _migrate(conn) -> None:
     if "ingredients" not in dish_cols:
         # Une ligne par ingrédient, quantité incluse : "400 g de riz basmati"
         conn.execute("ALTER TABLE dishes ADD COLUMN ingredients TEXT DEFAULT ''")
+
+    grocery_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grocery_items)")}
+    if "dish_id" not in grocery_cols:
+        conn.execute("ALTER TABLE grocery_items ADD COLUMN dish_id INTEGER REFERENCES dishes(id) ON DELETE CASCADE")
 
 
 @contextmanager
