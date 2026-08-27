@@ -3,7 +3,8 @@
 Any feature can use this module without knowing anything about Telegram:
   * send_message()          — push a notification to the configured chat
   * register_command()      — make the bot answer a /command interactively
-                              (long-polling, enabled via TELEGRAM_POLLING)
+  * register_text_handler() — handle plain messages (no slash), for features
+                              that understand natural language
 
 Cron-style scheduling lives in app/bot.py (APScheduler), which is where
 features register their daily jobs. Nothing here knows about plants or meals.
@@ -22,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-_commands: dict[str, Callable[[str, int], str]] = {}
+# handler(args, chat_id, user_id) -> reply text
+_commands: dict[str, Callable[[str, int, int], Optional[str]]] = {}
+# handler(text, chat_id, user_id, is_private) -> reply text or None to stay silent
+_text_handlers: list[Callable[[str, int, int, bool], Optional[str]]] = []
 _polling_task: Optional[asyncio.Task] = None
 
 
@@ -46,9 +50,24 @@ def send_message(text: str, chat_id: Optional[int] = None) -> bool:
         return False
 
 
-def register_command(command: str, handler: Callable[[str, int], str]) -> None:
-    """Register a command handler: handler(args, chat_id) -> reply text."""
+def register_command(command: str, handler: Callable[[str, int, int], Optional[str]]) -> None:
+    """Register a command handler: handler(args, chat_id, user_id) -> reply text."""
     _commands[command] = handler
+
+
+def register_text_handler(handler: Callable[[str, int, int, bool], Optional[str]]) -> None:
+    """Handle messages that are not commands.
+
+    handler(text, chat_id, user_id, is_private) -> reply text, or None to ignore
+    the message entirely (the bot then stays silent, which is what you want in a
+    busy group chat).
+
+    Several features may register a handler: they are tried in registration
+    order and the first one to return a reply wins, so each handler must return
+    None for messages that are not its business.
+    """
+    if handler not in _text_handlers:
+        _text_handlers.append(handler)
 
 
 def _get_updates(offset: int) -> list[dict]:
@@ -68,14 +87,29 @@ async def _poll_loop() -> None:
                 if not message or "text" not in message:
                     continue
                 text = message["text"].strip()
-                if not text.startswith("/"):
+                chat = message.get("chat") or {}
+                chat_id = chat.get("id")
+                user_id = (message.get("from") or {}).get("id", 0)
+                if chat_id is None:
                     continue
-                command, _, args = text.partition(" ")
-                handler = _commands.get(command.lower())
-                if handler:
-                    reply = handler(args.strip(), message["chat"]["id"])
-                    if reply:
-                        await asyncio.to_thread(send_message, reply, message["chat"]["id"])
+
+                reply = None
+                if text.startswith("/"):
+                    command, _, args = text.partition(" ")
+                    # In groups Telegram sends "/envies@MonBot" — drop the suffix.
+                    handler = _commands.get(command.split("@")[0].lower())
+                    if handler:
+                        # Handlers hit SQLite and sometimes an LLM: keep the loop free.
+                        reply = await asyncio.to_thread(handler, args.strip(), chat_id, user_id)
+                else:
+                    for handler in list(_text_handlers):
+                        reply = await asyncio.to_thread(
+                            handler, text, chat_id, user_id, chat.get("type") == "private"
+                        )
+                        if reply:
+                            break
+                if reply:
+                    await asyncio.to_thread(send_message, reply, chat_id)
         except asyncio.CancelledError:
             break
         except Exception:

@@ -1,4 +1,4 @@
-"""Dashboard de la Perrucherie — household dashboard (plants + meal prep).
+"""Dashboard de la Perrucherie — household dashboard (plants, meals, wishlist, storage).
 
 Serves a REST API (fully documented at /docs, OpenAPI at /openapi.json)
 and the static frontend. Designed to be reachable from any device on the LAN
@@ -15,16 +15,17 @@ from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, get_conn, init_db
 from . import bot
-from .routers import grocery, meals, plants
+from .routers import grocery, meals, plants, storage, wishlist
 
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
     title="Dashboard de la Perrucherie",
     description=(
-        "Dashboard de gestion de la maison : suivi des plantes (arrosage, rappels) "
-        "et planification des repas (meal prep). API REST complète, pensée pour "
-        "être lue et écrite par des agents."
+        "Dashboard de gestion de la maison : suivi des plantes (arrosage, rappels), "
+        "planification des repas (meal prep), listes d'envies/cadeaux et inventaire "
+        "des cartons de rangement. API REST "
+        "complète, pensée pour être lue et écrite par des agents."
     ),
     version="0.1.0",
 )
@@ -32,6 +33,8 @@ app = FastAPI(
 app.include_router(plants.router)
 app.include_router(meals.router)
 app.include_router(grocery.router)
+app.include_router(wishlist.router)
+app.include_router(storage.router)
 app.include_router(bot.router)
 
 
@@ -45,7 +48,8 @@ async def startup() -> None:
 def summary():
     """One-shot overview of the household — the ideal first endpoint for an agent.
 
-    Returns due plants, today's meals (from the active plan), and counters.
+    Returns due plants, today's meals (from the active plan), upcoming birthdays
+    and counters.
     """
     due = plants.due_plants()
 
@@ -57,6 +61,13 @@ def summary():
         total_dishes = conn.execute("SELECT COUNT(*) c FROM dishes").fetchone()["c"]
         total_grocery = conn.execute("SELECT COUNT(*) c FROM grocery_items").fetchone()["c"]
         total_fridge = conn.execute("SELECT COUNT(*) c FROM fridge_items").fetchone()["c"]
+        total_wishes = conn.execute("SELECT COUNT(*) c FROM wishlist_items").fetchone()["c"]
+        open_wishes = conn.execute(
+            "SELECT COUNT(*) c FROM wishlist_items WHERE status = 'wanted'"
+        ).fetchone()["c"]
+        wish_people = conn.execute("SELECT COUNT(*) c FROM wishlist_people").fetchone()["c"]
+        stored_items = conn.execute("SELECT COUNT(*) c FROM storage_items").fetchone()["c"]
+        storage_boxes = conn.execute("SELECT COUNT(*) c FROM storage_boxes").fetchone()["c"]
 
     if plan:
         start = date.fromisoformat(plan["start_date"])
@@ -74,6 +85,19 @@ def summary():
                 ).fetchall()
             meals_today = [dict(r) for r in rows if r["dish"]]
 
+    # Ce qui est sorti des cartons : le seul état « en cours » du rangement.
+    items_out = storage.list_items(status="out")
+
+    # Anniversaires dans les 60 jours — le bon moment pour piocher dans une liste d'envies.
+    upcoming_birthdays = [
+        {"name": p["name"], "emoji": p["emoji"], "days_until_birthday": p["days_until_birthday"]}
+        for p in sorted(
+            (p for p in wishlist.list_people() if p["days_until_birthday"] is not None),
+            key=lambda p: p["days_until_birthday"],
+        )
+        if p["days_until_birthday"] <= 60
+    ]
+
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "plants": {
@@ -89,6 +113,18 @@ def summary():
         "grocery": {
             "items_on_list": total_grocery,
             "fridge_items": total_fridge,
+        },
+        "storage": {
+            "boxes": storage_boxes,
+            "items": stored_items,
+            "out_count": len(items_out),
+            "out": items_out,                    # ce qui est sorti des cartons
+        },
+        "wishlist": {
+            "people": wish_people,
+            "total_wishes": total_wishes,
+            "open_wishes": open_wishes,          # encore à offrir
+            "upcoming_birthdays": upcoming_birthdays,
         },
     }
 

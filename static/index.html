@@ -21,6 +21,8 @@
       <button class="tab" data-view="plants">🌿 Plantes <span id="plants-badge" class="badge hidden"></span></button>
       <button class="tab" data-view="meals">🍽️ Repas</button>
       <button class="tab" data-view="grocery">🛒 Courses</button>
+      <button class="tab" data-view="wishlist">🎁 Envies</button>
+      <button class="tab" data-view="storage">📦 Rangement <span id="storage-badge" class="badge hidden"></span></button>
     </nav>
     <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage">🔔</button>
   </header>
@@ -30,12 +32,23 @@
     <section id="view-home" class="view active">
       <div class="home-grid">
         <div class="card home-card">
-          <h2>🌿 Arrosages à faire</h2>
+          <h2>🌿 Arrosages à faire<button class="info-btn" data-help="plants" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-plants"></div>
           <div id="home-due-plants" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
         <div class="card home-card">
           <h2>🍽️ Repas du jour</h2>
           <div id="home-today-meals" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card">
+          <h2>🎁 Cadeaux à prévoir<button class="info-btn" data-help="wishlist" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-wishlist"></div>
+          <div id="home-wishlist" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card">
+          <h2>📦 Sortis des cartons<button class="info-btn" data-help="storage" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-storage"></div>
+          <div id="home-storage" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
         <div class="card home-card">
           <h2>📊 En bref</h2>
@@ -119,6 +132,62 @@
         </div>
       </div>
     </section>
+
+    <!-- ================= ENVIES & CADEAUX ================= -->
+    <section id="view-wishlist" class="view">
+      <div class="section-head">
+        <h2>Listes d'envies</h2>
+        <div class="plan-actions">
+          <button class="btn btn-ghost" id="gift-mode-btn" aria-pressed="false"
+                  title="Afficher qui a réservé quoi — à n'activer que hors de la vue du/de la destinataire">
+            🙈 Vue sans spoiler
+          </button>
+          <button class="btn btn-ghost" id="add-person-btn">+ Personne</button>
+          <button class="btn btn-primary" id="add-wish-btn">+ Envie</button>
+        </div>
+      </div>
+      <div class="wishlist-layout">
+        <aside class="card people-panel">
+          <h3>Qui rêve de quoi ?</h3>
+          <div id="people-list" class="people-list"></div>
+        </aside>
+        <div class="wishes-panel">
+          <div id="wishlist-head"></div>
+          <div class="wish-filters" id="wish-filters"></div>
+          <div id="wishes-grid" class="wishes-grid"></div>
+        </div>
+      </div>
+    </section>
+    <!-- ================= RANGEMENT (CARTONS) ================= -->
+    <section id="view-storage" class="view">
+      <div class="card storage-topcard">
+        <div class="storage-search">
+          <span class="search-icon">🔎</span>
+          <input id="storage-q" type="search" autocomplete="off"
+                 placeholder="Chercher un objet, un carton, une personne… (ex. « kite », « carton 2 »)" />
+          <kbd class="search-kbd">/</kbd>
+        </div>
+        <div class="storage-filters">
+          <div class="chip-row" id="storage-owner-chips"></div>
+          <div class="chip-row" id="storage-status-chips">
+            <button class="chip active" data-status="">Tout</button>
+            <button class="chip" data-status="stored">📦 Rangés</button>
+            <button class="chip" data-status="out">🚪 Sortis</button>
+          </div>
+          <select id="storage-category" class="storage-select"></select>
+          <div class="seg" id="storage-mode">
+            <button class="seg-btn active" data-mode="boxes">Cartons</button>
+            <button class="seg-btn" data-mode="items">Objets</button>
+          </div>
+          <div class="storage-add">
+            <button class="btn btn-ghost btn-sm" id="add-box-btn">+ Carton</button>
+            <button class="btn btn-primary btn-sm" id="add-item-btn">+ Objet</button>
+          </div>
+        </div>
+        <div class="storage-stats" id="storage-stats"></div>
+      </div>
+      <div id="storage-results"></div>
+    </section>
   </main>
 
   <!-- ================= MODALE PLANTE ================= -->
@@ -155,10 +224,21 @@
       <input type="hidden" id="dish-id" />
       <input type="hidden" id="dish-photo-token" />
       <input type="file" id="dish-photo-input" accept="image/*" capture="environment" hidden />
+      <fieldset class="mode-choice" id="dish-mode-choice">
+        <legend>Comment remplir ce plat ?</legend>
+        <div class="mode-options">
+          <button type="button" class="mode-option is-active" data-mode="manual" aria-pressed="true">
+            ✍️ Manuellement<small>Vous saisissez tout, la photo reste une simple photo</small>
+          </button>
+          <button type="button" class="mode-option" data-mode="ai" aria-pressed="false">
+            ✨ Avec l'IA<small>Une photo du plat pré-remplit le formulaire</small>
+          </button>
+        </div>
+      </fieldset>
       <div class="photo-id-row">
         <img id="dish-photo-preview" class="photo-preview hidden" alt="Photo du plat" />
         <div class="photo-id-side">
-          <button type="button" class="btn btn-ghost btn-sm" id="dish-photo-btn">📷 Identifier par photo</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="dish-photo-btn">📷 Ajouter une photo</button>
           <small id="dish-photo-status" class="muted"></small>
         </div>
       </div>
@@ -195,6 +275,161 @@
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" data-close>Annuler</button>
         <button type="submit" class="btn btn-primary">Créer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE PERSONNE ================= -->
+  <dialog id="person-modal" class="modal">
+    <form method="dialog" id="person-form">
+      <h3 id="person-modal-title">Nouvelle liste d'envies</h3>
+      <input type="hidden" id="person-id" />
+      <label>Prénom *<input id="person-name" required placeholder="Camille" /></label>
+      <label>Emoji<input id="person-emoji" maxlength="4" placeholder="🎁" /></label>
+      <label>Anniversaire<input id="person-birthday" type="date" /></label>
+      <label>Notes pour qui offre <small class="muted">(tailles, goûts, ce qu'il ne faut surtout pas offrir)</small>
+        <textarea id="person-notes" rows="3" placeholder="Taille M, pointure 39, allergique à la laine…"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE ENVIE ================= -->
+  <dialog id="wish-modal" class="modal">
+    <form method="dialog" id="wish-form">
+      <h3 id="wish-modal-title">Ajouter une envie</h3>
+      <input type="hidden" id="wish-id" />
+      <input type="hidden" id="wish-photo-token" />
+      <input type="file" id="wish-photo-input" accept="image/*" capture="environment" hidden />
+      <fieldset class="mode-choice" id="wish-mode-choice">
+        <legend>Comment remplir cette envie ?</legend>
+        <div class="mode-options">
+          <button type="button" class="mode-option is-active" data-mode="manual" aria-pressed="true">
+            ✍️ Manuellement<small>Vous saisissez tout, la photo reste une simple photo</small>
+          </button>
+          <button type="button" class="mode-option" data-mode="ai" aria-pressed="false">
+            ✨ Avec l'IA<small>Une photo de l'objet pré-remplit le formulaire</small>
+          </button>
+        </div>
+      </fieldset>
+      <div class="photo-id-row">
+        <img id="wish-photo-preview" class="photo-preview hidden" alt="Photo de l'envie" />
+        <div class="photo-id-side">
+          <button type="button" class="btn btn-ghost btn-sm" id="wish-photo-btn">📷 Ajouter une photo</button>
+          <small id="wish-photo-status" class="muted"></small>
+        </div>
+      </div>
+      <label>Pour qui *<select id="wish-person" required></select></label>
+      <label>Quoi ? *<input id="wish-name" required placeholder="Casque Sony WH-1000XM5" /></label>
+      <label>Description<textarea id="wish-description" rows="2" placeholder="Pourquoi cet objet, quelle version exactement…"></textarea></label>
+      <label>Catégorie
+        <select id="wish-category">
+          <option value="tech">💻 Tech</option>
+          <option value="maison">🏠 Maison</option>
+          <option value="vetements">👕 Vêtements</option>
+          <option value="livres">📚 Livres</option>
+          <option value="sport">🏃 Sport</option>
+          <option value="loisirs">🎲 Loisirs</option>
+          <option value="beaute">💄 Beauté</option>
+          <option value="cuisine">🍳 Cuisine</option>
+          <option value="voyage">✈️ Voyage</option>
+          <option value="experience">🎟️ Expérience</option>
+          <option value="autre" selected>🎁 Autre</option>
+        </select>
+      </label>
+      <label>Envie de <small class="muted">(à quel point ?)</small>
+        <select id="wish-priority">
+          <option value="3">⭐⭐⭐ J'en rêve</option>
+          <option value="2" selected>⭐⭐ Ça me plairait</option>
+          <option value="1">⭐ Un jour, peut-être</option>
+        </select>
+      </label>
+      <div class="field-row">
+        <label>Prix estimé<input id="wish-price" type="number" min="0" step="0.05" placeholder="349" /></label>
+        <label>Devise<input id="wish-currency" value="CHF" maxlength="6" /></label>
+        <label>Quantité<input id="wish-quantity" type="number" min="1" value="1" /></label>
+      </div>
+      <div class="field-row">
+        <label>Taille<input id="wish-size" placeholder="M / 39 / 40 cm" /></label>
+        <label>Couleur<input id="wish-color" placeholder="Noir mat" /></label>
+      </div>
+      <label>Où l'acheter<input id="wish-shop" placeholder="Digitec, Payot, marché de Noël…" /></label>
+      <label>Lien<input id="wish-url" type="url" placeholder="https://…" /></label>
+      <div class="field-row">
+        <label>Occasion<input id="wish-occasion" placeholder="Noël, anniversaire…" list="wish-occasions" /></label>
+        <label>À offrir avant<input id="wish-target" type="date" /></label>
+      </div>
+      <datalist id="wish-occasions">
+        <option value="Noël"></option>
+        <option value="Anniversaire"></option>
+        <option value="Sans occasion"></option>
+      </datalist>
+      <label>Notes<textarea id="wish-notes" rows="2" placeholder="Référence exacte, où j'en ai vu un…"></textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE OBJET (RANGEMENT) ================= -->
+  <dialog id="st-item-modal" class="modal">
+    <form method="dialog" id="st-item-form">
+      <h3 id="st-item-title">Ajouter un objet</h3>
+      <input type="hidden" id="st-item-id" />
+      <label>Nom *<input id="st-item-name" required placeholder="Wetsuit Hurley 3/2" /></label>
+      <label>Carton<select id="st-item-box"></select></label>
+      <label>Appartient à
+        <div class="owner-toggles" id="st-item-owners"></div>
+        <input id="st-item-owner-extra" placeholder="Autre prénom (facultatif)" />
+      </label>
+      <label>Collection <small class="muted">(pour retrouver un thème à travers les cartons)</small>
+        <input id="st-item-category" list="st-categories" placeholder="Nautique" />
+        <datalist id="st-categories"></datalist>
+      </label>
+      <label>Quantité<input id="st-item-qty" type="number" min="1" value="1" /></label>
+      <label>Description<input id="st-item-desc" placeholder="Détails, contenu, état…" /></label>
+      <label>Notes<textarea id="st-item-notes" rows="2"></textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE CARTON ================= -->
+  <dialog id="st-box-modal" class="modal">
+    <form method="dialog" id="st-box-form">
+      <h3 id="st-box-title">Nouveau carton</h3>
+      <input type="hidden" id="st-box-id" />
+      <label>Numéro / code * <small class="muted">(ce qui est écrit sur le carton)</small>
+        <input id="st-box-code" required placeholder="21" />
+      </label>
+      <label>Thème<input id="st-box-name" placeholder="Nautique" /></label>
+      <label>Type de contenant<input id="st-box-kind" placeholder="Carton Bananas" /></label>
+      <label>Où est-il rangé ?<input id="st-box-location" placeholder="Cave, étagère du haut" /></label>
+      <label>Notes<textarea id="st-box-notes" rows="2"></textarea></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE SORTIE D'OBJET ================= -->
+  <dialog id="st-out-modal" class="modal">
+    <form method="dialog" id="st-out-form">
+      <h3>🚪 Sortir un objet</h3>
+      <p class="muted" id="st-out-name"></p>
+      <input type="hidden" id="st-out-id" />
+      <label>Où / chez qui ?<input id="st-out-note" placeholder="Prêté à Tom, chambre, bureau…" /></label>
+      <label>Depuis le<input id="st-out-date" type="date" /></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Sortir</button>
       </div>
     </form>
   </dialog>

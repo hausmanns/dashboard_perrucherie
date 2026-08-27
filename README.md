@@ -6,6 +6,15 @@ Dashboard de gestion de la maison, auto-hébergé sur votre réseau local :
   est temps d'arroser, historique d'arrosage, notifications navigateur.
 - 🍽️ **Meal prep** — bibliothèque de plats + planning de repas sur plusieurs
   semaines (nombre de semaines et de repas par jour configurables).
+- 🛒 **Courses & frigo** — liste de courses manuelle ou générée depuis les
+  ingrédients d'un plan de repas ; un article coché « acheté » part au frigo.
+- 🎁 **Envies** — la liste d'envies de chaque habitant·e : prix, boutique,
+  lien, taille, couleur, niveau d'envie, occasion, photo. Celui ou celle qui
+  offre peut **réserver** une envie (personne n'achète deux fois le même
+  cadeau), et la liste s'affiche par défaut **sans spoiler** : le/la
+  destinataire ne voit ni qui a réservé, ni ce qui est déjà acheté.
+  Une envie s'ajoute aussi **depuis Telegram en langage naturel** :
+  « /envie un casque Sony vers 350.- pour Lea » — le bot demande ce qui manque.
 
 Pensé « agent-first » : toutes les données sont lisibles et modifiables via une
 API REST documentée (voir `AGENTS.md` et `/docs`).
@@ -59,7 +68,8 @@ Un simple `git pull` ailleurs récupère code **et** données ; un
 
 ## API pour agents
 
-- `GET /api/summary` — vue d'ensemble (plantes à arroser, repas du jour, compteurs)
+- `GET /api/summary` — vue d'ensemble (plantes à arroser, repas du jour, anniversaires, compteurs)
+- `GET /api/wishlist/overview` — « qu'est-ce que je pourrais offrir à X ? »
 - `GET /docs` — documentation interactive Swagger
 - `GET /openapi.json` — spec OpenAPI complète
 

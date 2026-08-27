@@ -14,18 +14,42 @@ local network. Current features:
    shown on the plant card.
 2. **Meal prep** — a dish library + multi-week meal plans on a
    `weeks × 7 days × meals-per-day` grid. Dishes can carry a **photo** and an
-   **ingredient list**, both pre-fillable by an agentic **AI dish
-   identification** button (snap a photo of the dish; the vision LLM fills
-   name, category, prep time, ingredients, notes and attaches the photo).
+   **ingredient list**. The dish form asks how to fill it in: **manual entry
+   (the default)** — you type the fields and the photo stays a plain photo —
+   or **AI dish identification** (snap a photo of the dish; the vision LLM
+   fills name, category, prep time, ingredients, notes and attaches the photo).
 3. **Groceries & fridge** — a grocery list with two kinds of items:
    **manual** items (plan-independent list) and **generated** items built
    from the ingredients of every dish used in a meal plan, or from a single
    dish on demand (duplicates merged, quantities summed). Marking an item as
    bought moves it into the **fridge** inventory.
-4. **Telegram bot** — general-purpose notification channel. First feature:
-   daily **watering reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`)
-   sent to a Telegram chat, plus an interactive `/plantes` command. Setup doc:
-   `TELEGRAM_BOT.md`. No LLM involved — pure scheduled checks.
+4. **Wishlist ("Envies")** — one list of material wishes per person of the
+   household, so *someone else* can browse it and actually buy the present.
+   Each wish carries what a gifter needs: price + currency, shop, product
+   link, size, colour, quantity, priority (1-3), occasion, deadline, photo
+   (plain upload **or** AI object identification). Gifters **reserve** a wish
+   (`/reserve` → `/bought` → `/received`) so two people never buy the same
+   thing, and every read endpoint has a **spoiler-free mode**
+   (`?hide_reservations=true`) that hides all of that from the person the
+   list belongs to.
+5. **Storage ("Rangement")** — the inventory of what is packed away, which
+   replaces the old cartons spreadsheet. **Boxes** carry the code written on
+   them plus a theme, a container type and a location; **items** carry an
+   owner list (`Seb`, `Lea`, `Seb,Lea`), a cross-box **collection**, and a
+   status. Taking something out or putting it back is one call that stamps
+   the date itself and appends to `storage_events`, so the history exists
+   without anyone maintaining it. The search endpoint is accent- and
+   case-insensitive and spans the item, its box and its owners — it is how
+   "where is my X?" gets answered.
+6. **Telegram bot** — general-purpose notification channel. Daily **watering
+   reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`), the read-only
+   `/plantes`, `/envies`, `/cartons`, `/sortis` and `/ou` commands, and two
+   **plain-French write paths** running through an LLM (`app/nlu.py`):
+   **adding a wish** (« /envie un casque Sony vers 350.- pour Lea ») and
+   **updating the storage inventory** (« j'ai sorti le wetsuit du carton 2,
+   prêté à Tom »). Both **ask for whatever is missing or ambiguous** — who it
+   is for, the price, *which* pair of goggles — one question at a time.
+   Setup doc: `TELEGRAM_BOT.md`.
 
 The architecture is deliberately **agent-first**: everything the UI can do is
 exposed through a plain REST/JSON API, so agents can read and write all data
@@ -73,21 +97,32 @@ app/
   main.py            FastAPI app, /api/summary, static serving
   config.py          env/.env config (OPENROUTER_API_KEY, OPENROUTER_MODEL,
                      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_TZ)
-  vision.py          OpenRouter vision calls → plant & dish identification (strict JSON)
-  photos.py          shared photo upload/claim helpers (plants + dishes)
+  openrouter.py      shared OpenRouter chat plumbing (strict-JSON, sync + async)
+  vision.py          photo → plant, dish & wish identification
+  nlu.py             free-text Telegram message → structured wish (+ follow-up answers)
+  photos.py          shared photo upload/claim helpers (plants + dishes + wishes)
   database.py        SQLite connection + schema (init_db, additive migrations)
   telegram.py        generic Telegram module (send, commands, polling)
-  bot.py             feature wiring (watering reminders + /plantes) + APScheduler cron
+  bot.py             feature wiring (watering reminders, /plantes, /envies, /envie,
+                     /moi, /cartons, /ou, /sorti, /range, natural-language wish
+                     capture + storage updates) + APScheduler cron
+  nlu.py             free-text Telegram message → structured wish / storage action
   routers/
     plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
-    meals.py         /api/dishes*, /api/meal-plans* (grid entries, dish photo + /identify)
+    meals.py         /api/dishes*, /api/meal-plans* (grid entries, dish /photo + /identify)
     grocery.py       /api/grocery*, /api/fridge* (list, /from-plan, /buy → fridge)
+    wishlist.py      /api/wishlist* (people, items, /reserve → /bought → /received,
+                     name resolution, Telegram account linking)
+    storage.py       /api/storage* (boxes, items, search, /out → /in, /move, history)
 static/
-  index.html         SPA shell (4 views: Accueil / Plantes / Repas / Courses)
+  index.html         SPA shell (6 views: Accueil / Plantes / Repas / Courses /
+                     Envies / Rangement)
+                     Chaque carte d'accueil branchée au bot porte un « (i) »
+                     qui explique ses commandes Telegram (HOME_HELP dans app.js)
   style.css          theme (dark botanical)
   app.js             all frontend logic, fetch-based
 data/dashboard.db    SQLite data (committed, portable)
-data/photos/         plant photos from identification (committed like the DB)
+data/photos/         plant, dish & wish photos (committed like the DB)
 .env                 OpenRouter API key (gitignored — see .env.example)
 Dockerfile           all-in-one image (python:3.12-slim + uvicorn)
 docker-compose.yml   single service, port mapping, ./data bind mount, env passthrough
@@ -103,7 +138,7 @@ locally: `http://localhost:8000`.
 - **Interactive API docs**: `GET /docs` (Swagger UI)
 - **Machine-readable spec**: `GET /openapi.json`
 - **Best starting point**: `GET /api/summary` — one call returning due plants,
-  today's meals from the active plan, and counters.
+  today's meals from the active plan, upcoming birthdays and counters.
 
 ### Key endpoints
 
@@ -118,7 +153,8 @@ locally: `http://localhost:8000`.
 | Identify plant from photo | `POST /api/plants/identify` multipart `file` (JPEG/PNG/WebP, ≤ 8 MB) → `{name, species, watering_frequency_days, notes, photo_token}` |
 | Get a plant's photo | `GET /api/plants/{id}/photo` (404 if none) |
 | Dish library | `GET` / `POST /api/dishes`, `PUT` / `DELETE /api/dishes/{id}` |
-| Identify dish from photo | `POST /api/dishes/identify` multipart `file` → `{name, category, prep_time_minutes, ingredients, notes, photo_token}` |
+| Identify dish from photo (AI) | `POST /api/dishes/identify` multipart `file` → `{name, category, prep_time_minutes, ingredients, notes, photo_token}` |
+| Attach a dish photo without AI | `POST /api/dishes/photo` multipart `file` (JPEG/PNG/WebP, ≤ 8 MB) → `{photo_token}` |
 | Get a dish's photo | `GET /api/dishes/{id}/photo` (404 if none) |
 | Meal plans | `GET` / `POST /api/meal-plans`, `PUT` / `DELETE /api/meal-plans/{id}` |
 | Full plan grid | `GET /api/meal-plans/{id}` |
@@ -129,6 +165,31 @@ locally: `http://localhost:8000`.
 | Mark item as bought → fridge | `POST /api/grocery/{id}/buy` |
 | Fridge inventory | `GET` / `POST /api/fridge`, `PUT` / `DELETE /api/fridge/{id}` |
 | Trigger Telegram watering check | `POST /api/bot/watering-check` (sends the summary to the chat now) |
+| What the bot can currently do | `GET /api/bot/status` → `{telegram_configured, ai_configured}` |
+| **Wishlist** — who could I offer what? | `GET /api/wishlist/overview` (per person: counters, remaining budget, top 3 ideas, birthday countdown) |
+| People with a wishlist | `GET` / `POST /api/wishlist/people`, `PUT` / `DELETE /api/wishlist/people/{id}` |
+| Resolve a first name (accent/case-insensitive) | `GET /api/wishlist/people/resolve?name=seb` → `{matches, resolved}` |
+| Link a Telegram account to a person | `POST /api/wishlist/people/{id}/telegram` body `{"telegram_user_id": 42}` (`null` unlinks) |
+| List wishes | `GET /api/wishlist/items?person_id=&status=&category=&occasion=` |
+| Create / read / update / delete a wish | `POST /api/wishlist/items`, `GET` / `PUT` / `DELETE /api/wishlist/items/{id}` |
+| Identify a wished-for object from a photo (AI) | `POST /api/wishlist/identify` multipart `file` → `{name, category, price, shop, color, description, photo_token}` |
+| Attach a wish photo without AI | `POST /api/wishlist/photo` multipart `file` → `{photo_token}` |
+| Get a wish's photo | `GET /api/wishlist/items/{id}/photo` (404 if none) |
+| Claim a wish (« je m'en occupe ») | `POST /api/wishlist/items/{id}/reserve` body `{"by": "Seb"}` — **409** if already taken |
+| Release it again | `POST /api/wishlist/items/{id}/unreserve` |
+| Present bought / given | `POST /api/wishlist/items/{id}/bought` body `{"by": ...}` (defaults to the reserver) → `POST .../received` |
+| Spoiler-free read (owner's view) | add `?hide_reservations=true` to `/overview`, `/items`, `/items/{id}` |
+| **Storage** — where is my X? | `GET /api/storage/items?q=kite` (accent-insensitive, spans item + box + owner) |
+| Storage overview + filter values | `GET /api/storage/summary` (counters, what is out, owners, collections) |
+| List / create boxes | `GET` / `POST /api/storage/boxes` |
+| Get box with its contents | `GET /api/storage/boxes/{id}` |
+| Update / delete a box | `PUT` / `DELETE /api/storage/boxes/{id}` (items survive, `box_id` → `NULL`) |
+| Filter items | `GET /api/storage/items?owner=Seb&status=out&category=Nautique&box_id=3` |
+| Create / update / delete an item | `POST /api/storage/items`, `PUT` / `DELETE /api/storage/items/{id}` |
+| Take an item out of its box | `POST /api/storage/items/{id}/out` body `{}` or `{"note": "prêté à Tom", "at": ...}` |
+| Put it back | `POST /api/storage/items/{id}/in` body `{}` or `{"box_id": ...}` to land it elsewhere |
+| Move an item to another box | `POST /api/storage/items/{id}/move` body `{"box_id": 4}` (`null` → no box) |
+| An item's out/in history | `GET /api/storage/items/{id}/history` |
 
 ### Conventions agents must know
 
@@ -144,7 +205,12 @@ locally: `http://localhost:8000`.
   (default `google/gemini-2.5-flash`). Photos live in `data/photos/` and are
   committed like the DB; deleting a plant deletes its photo. The same flow
   applies to dishes (`POST /api/dishes/identify`, `photo` field on the dish,
-  `dish_<id>.<ext>`).
+  `dish_<id>.<ext>`). For dishes there is also an **AI-free** upload,
+  `POST /api/dishes/photo`, which stores the photo the same way and returns
+  only a `photo_token` — no OpenRouter call, no pre-filled fields. The dish
+  form asks which mode to use and **defaults to manual entry**. Wishes work
+  exactly the same way (`POST /api/wishlist/identify` for the AI route,
+  `POST /api/wishlist/photo` for the plain upload, `wish_<id>.<ext>`).
 - **Dish ingredients** are stored as a plain text field, one
   `"quantity + name"` line per ingredient (e.g. `400 g de riz basmati`) —
   this is what the dish identification returns and what
@@ -163,11 +229,82 @@ locally: `http://localhost:8000`.
 - UI copy is in **French**; code, identifiers and docs in English.
 - When adding an entry, use upsert semantics (`PUT .../entry`) — don't insert
   duplicates; the DB enforces uniqueness per cell.
+- **Wishlist statuses** are stored, not computed: `wanted` → `reserved` →
+  `bought` → `received`, plus `archived` (an abandoned wish; hidden from the
+  UI's default filter). `is_taken` is the computed shorthand for
+  `reserved | bought`. `PUT /api/wishlist/items/{id}` with `status` omitted or
+  `null` keeps the current status, so the owner editing their own wish never
+  wipes a gifter's reservation — only the action endpoints move an item along
+  the workflow.
+- **The spoiler-free view is the safe default.** `?hide_reservations=true`
+  blanks `reserved_by`/`reserved_at`/`bought_by`/`bought_at`, rewinds a
+  `reserved`/`bought` item back to `wanted`, sets `is_taken` to `null` and adds
+  `reservations_hidden: true`; in `/overview` the counters and the remaining
+  budget are folded the same way so they can't leak either. The frontend starts
+  in that mode and only reveals reservations when someone presses « Mode
+  cadeau ». When an agent answers on a shared channel (the Telegram chat, a
+  screen the whole household can see), prefer it too — `/envies` shows
+  « 🔒 pris en charge » but never who.
+- **Wish priority** is `1` (un jour) / `2` (ça me plairait) / `3` (j'en rêve),
+  rendered as 1-3 stars; lists come back sorted by priority, highest first.
+  Categories are accent-free slugs shared with the vision prompt
+  (`app.vision.WISH_CATEGORIES`); an unknown one falls back to `autre` instead
+  of erroring. Prices are plain numbers with a separate `currency` (default
+  `CHF`).
+- **First names are matched loosely** everywhere a human types one (Telegram,
+  `/people/resolve`): `wishlist.normalize_name()` strips accents, case and
+  punctuation, so « Séb », « seb » and « SEB. » collapse to the same key.
+  `match_people()` then tries exact key → prefix either way (« Séb » finds
+  « Sébastien ») → substring, and returns **every** candidate: more than one
+  means ambiguous, and the caller must ask rather than guess. Never match on
+  raw `name` with `in` or `==` — that is how « seb » stopped finding « Séb ».
+- **Natural-language wish capture** (`app/nlu.py` + `bot._wish_text_handler`):
+  the LLM only *extracts* (`intent`, `person`, `for_sender`, `items[]`); it
+  never writes. Everything goes through the normal router functions, so the
+  same validation applies, and unknown keys the model invents are dropped by
+  `nlu._clean_item()`. Missing fields are asked one wish at a time through a
+  per-chat pending state (in memory, 15 min TTL — a restart forgets pending
+  questions, which beats answering the wrong one). Free text is parsed **only
+  in private chats**; in a group it takes `/envie …`, otherwise every message
+  in the room would hit OpenRouter. A message that is not a wish gets no reply
+  at all.
+- **Telegram handlers** take `(args, chat_id, user_id)` for commands and
+  `(text, chat_id, user_id, is_private)` for the text handler, and run in a
+  worker thread (`asyncio.to_thread`) — they may block on SQLite or an LLM
+  call. Returning `None` from the text handler means "stay silent".
+- **Storage status is stored, dates are automatic**: an item is `stored` or
+  `out`; `POST .../out` sets `out_since` (now, or the `at` you pass) and
+  `out_note` ("où / chez qui"), `POST .../in` clears both. Never write
+  `out_since` by hand through `PUT /items/{id}` — it keeps whatever the item
+  already had, because the status is meant to be driven by `/out` and `/in`.
+  Every one of those calls appends to `storage_events`, which is the audit
+  trail behind `GET /items/{id}/history`.
+- **Storage owners** are a comma-separated list in one `owner` column
+  (`"Seb,Lea"`), echoed back parsed as `owners: ["Seb", "Lea"]`. Filtering by
+  `owner=` matches membership, not the raw string.
+- **Storage `category`** is a *collection* that deliberately crosses boxes
+  ("Nautique" lives in cartons 2 and 6). It defaults to the box's `name` when
+  omitted on create.
+- **Storage search** (`?q=`): all words must match (AND), accent- and
+  case-insensitively, across the item, its box and its owners. A query that is
+  just a box code — `2`, `carton 2`, `#7` — returns that box's contents
+  instead of every name containing that digit.
 - **Telegram bot**: a generic module (`app/telegram.py`) + feature wiring
   (`app/bot.py`). Features register cron jobs with `bot.add_cron_job(func,
   hour, minute)` (daily, server-local time or `TELEGRAM_TZ`) and commands with
   `telegram.register_command("/cmd", handler)`. The scheduler lives inside the
-  app process, so it starts/stops with the container. Setup: `TELEGRAM_BOT.md`.
+  app process, so it starts/stops with the container. Commands so far:
+  `/plantes`, `/envies [prénom]`, `/envie <texte>`, `/moi <prénom>`,
+  `/cartons [recherche]`, `/ou <objet>`, `/sortis`, `/sorti <texte>`,
+  `/range <texte>`, `/help`. Setup: `TELEGRAM_BOT.md`.
+- **Several text handlers can coexist**: `telegram.register_text_handler()`
+  appends, and handlers are tried in registration order until one returns a
+  reply — so each must return `None` for anything that is not its business.
+  Storage is registered *before* the wishlist and only wakes the LLM when the
+  message contains a storage word (`carton`, `sorti`, `rangé`, `prêté`…);
+  everything else falls through to the wishlist. Both features share the
+  per-chat `_pending` conversation slot, and each ignores a pending
+  conversation whose `stage` is not its own.
 
 ## Coding conventions
 

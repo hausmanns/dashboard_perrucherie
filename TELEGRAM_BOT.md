@@ -1,7 +1,8 @@
 # 🤖 Bot Telegram
 
 Envoie un résumé d'arrosage dans un chat Telegram à **09h00 et 21h00**
-(heure configurable), et répond à `/plantes` à la demande. Le module est
+(heure configurable), répond à `/plantes` à la demande, et tient à jour les
+listes d'envies et l'inventaire des cartons. Le module est
 générique (`app/telegram.py`) : d'autres fonctionnalités du dashboard
 peuvent se brancher dessus plus tard.
 
@@ -79,14 +80,83 @@ Deux cas :
 ## Commandes du bot
 
 - `/plantes` — état d'arrosage (plantes à arroser, sinon « toutes arrosées »)
+- `/envies [prénom]` — listes d'envies de la maison (sans prénom : tout le
+  monde). Le salon Telegram étant partagé, la réponse ne dit jamais **qui**
+  s'occupe d'un cadeau : une envie déjà prise affiche seulement
+  « 🔒 pris en charge ».
+- `/envie <texte libre>` — **ajouter une envie en langage naturel**, par ex.
+  « /envie un casque Sony vers 350.- chez Digitec pour Lea ». Le bot comprend
+  le message, crée l'envie, puis **demande ce qui manque** (pour qui, le prix,
+  un lien…) une question à la fois. Répondez normalement, ou « non » pour
+  laisser en l'état.
+- `/moi <prénom>` — associe votre compte Telegram à une personne. Ensuite,
+  « je veux… » atterrit directement sur votre liste sans qu'on vous le demande.
+- `/cartons [recherche]` — inventaire des cartons de rangement, ou recherche
+  d'un objet si un texte suit.
+- `/ou <objet>` — dans quel carton se trouve un objet (et s'il en est sorti).
+- `/sortis` — tout ce qui est actuellement hors carton, avec depuis quand et
+  chez qui.
+- `/sorti <texte libre>` — **noter une sortie**, par ex.
+  « /sorti le wetsuit long du carton 2, prêté à Tom ». La date est estampillée
+  toute seule.
+- `/range <texte libre>` — l'inverse : « /range le stéthoscope ».
 - `/help` — liste des commandes
+
+### En message privé, la commande est facultative
+
+Dans une conversation privée avec le bot, écrivez simplement votre envie :
+
+```
+vous > j'aimerais offrir un pull en laine à Lea
+bot  > 🎁 Ajouté à la liste de Léa :
+       • Pull en laine
+
+       Pour « Pull en laine », il me manque le prix, un lien ou le magasin
+       et la taille. Réponds-moi, ou « non » pour laisser comme ça.
+vous > environ 80 francs chez Zara, taille M
+bot  > ✅ • Pull en laine · 80 CHF · Zara · taille M
+```
+
+Le rangement fonctionne pareil — dites simplement ce que vous avez pris ou
+remis :
+
+```
+vous > j'ai sorti le stéthoscope du carton 18, c'est pour Fetsuko
+bot  > 🚪 Sorti : Stetoscope — carton 18 — Lea · pour Fetsuko
+
+vous > j'ai pris les lunettes de kitesurf
+bot  > Plusieurs objets correspondent à « Lunettes kitesurf » :
+       1. Lunettes kitesurf — carton 2 — Seb
+       2. Lunettes kitesurf — carton 2 — Lea
+       Réponds avec le numéro (ou « annuler »).
+vous > 2
+bot  > 🚪 Sorti : Lunettes kitesurf — carton 2 — Lea
+```
+
+Un même message peut concerner plusieurs objets, et « j'ai mis X dans le
+carton Y » crée l'objet s'il n'existait pas encore (le bot demande le carton
+si vous ne le précisez pas).
+
+Les prénoms sont reconnus sans se soucier des accents ni de la casse :
+`lea`, `Léa`, `LEA` désignent la même personne, comme `seb`, `Séb` et `SEB`.
+
+**Dans un groupe**, le bot n'analyse pas la conversation : il faut `/envie …`.
+C'est volontaire — sinon chaque message du salon partirait vers le LLM.
+
+> ⚠️ Les commandes en langage naturel (`/envie`, `/sorti`, `/range`, et
+> l'écriture libre en privé) ont besoin de `OPENROUTER_API_KEY` dans `.env`
+> — la même clé que l'identification par photo. Sans elle, elles répondent que
+> la clé manque ; tout le reste du bot fonctionne, y compris les commandes de
+> lecture `/plantes`, `/envies`, `/cartons`, `/ou` et `/sortis`, qui ne
+> touchent que la base.
 
 ## Comment ça marche
 
 | Fichier | Rôle |
 |---|---|
 | `app/telegram.py` | Module générique : envoi de message, commandes, polling |
-| `app/bot.py` | Branchement des fonctionnalités (rappel arrosage + `/plantes`) + job cron 09h/21h |
+| `app/bot.py` | Branchement des fonctionnalités (rappel arrosage, `/plantes`, `/envies`, `/envie`, `/moi`, `/cartons`, `/ou`, `/sortis`, `/sorti`, `/range`) + job cron 09h/21h |
+| `app/nlu.py` | Lecture d'un message libre → envie ou action de rangement structurée (via OpenRouter) |
 | `POST /api/bot/watering-check` | Endpoint de test/trigger manuel |
 
 Le « cron » est un `BackgroundScheduler` (APScheduler) qui tourne **dans le

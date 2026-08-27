@@ -111,6 +111,19 @@ async def identify_dish_photo(file: UploadFile = File(...)):
     return {**suggestion, "photo_token": token}
 
 
+@router.post("/dishes/photo")
+async def upload_dish_photo(file: UploadFile = File(...)):
+    """Attach a photo to a dish **without** any AI identification.
+
+    Returns `{photo_token}`: pass it back as `photo` when creating/updating
+    the dish. Use this when the user fills the dish form manually.
+    """
+    content, ext = await read_image_upload(file)
+    token = uuid.uuid4().hex
+    save_tmp_photo(content, ext, token)
+    return {"photo_token": token}
+
+
 @router.get("/dishes/{dish_id}/photo")
 def dish_photo(dish_id: int):
     """Serve the dish's photo, if one was attached during identification."""

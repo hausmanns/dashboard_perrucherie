@@ -1,8 +1,9 @@
 """Runtime configuration (env vars / .env file).
 
-OPENROUTER_API_KEY  — required for the plant photo identification feature.
-OPENROUTER_MODEL    — vision model used for identification
-                      (default: google/gemini-2.5-flash).
+OPENROUTER_API_KEY  — required for every LLM feature: photo identification
+                      (plants, dishes, wishes) and reading a wish written in
+                      plain French on Telegram.
+OPENROUTER_MODEL    — model used for both (default: google/gemini-2.5-flash).
 """
 from __future__ import annotations
 
