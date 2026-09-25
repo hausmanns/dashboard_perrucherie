@@ -24,6 +24,8 @@ from __future__ import annotations
 import math
 import re
 from datetime import datetime, timedelta
+from itertools import groupby
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 
@@ -66,9 +68,12 @@ from .tmdb import TMDbError
 router = APIRouter(prefix="/api/bot", tags=["bot"])
 
 WATERING_HOURS = (9, 21)  # daily checks, server-local time
+SHOWS_SYNC_HOUR = 8            # the daily show sync + digest is due from 08:00…
+SHOWS_SYNC_CHECK_MINUTES = 15  # …and checked this often until it has run (see shows_sync_due)
 
 _scheduler: BackgroundScheduler | None = None
 _cron_jobs: list[tuple] = []  # (func, hour, minute)
+_last_shows_sync: datetime | None = None  # server-local, set by sync_and_notify_shows
 
 
 def add_cron_job(func, hour: int, minute: int = 0) -> None:
@@ -198,9 +203,51 @@ def _shows_command(args: str, chat_id: int, user_id: int) -> str:
     return shows_message()
 
 
+def _ep_code(e: dict) -> str:
+    return f"S{e['season_number']:02d}E{e['episode_number']:02d}"
+
+
+def shows_sync_due() -> bool:
+    """Whether the latest 08:00 slot (yesterday's, before 08:00) has gone by
+    without a show sync.
+
+    A plain 08:00 cron missed it most mornings: the host sleeps overnight and
+    wakes after 08:00, and APScheduler drops a run that is more than a second
+    late — or never hears of it at all when the app wasn't running (reboot,
+    container restart). So the sync is checked every few minutes instead
+    (`_shows_sync_check`) and runs as soon as it is due.
+
+    Right after a restart the in-memory `_last_shows_sync` is empty; the
+    oldest `last_synced_at` among the shows the sync covers stands in for it
+    (not the newest — refreshing a single show by hand must not count)."""
+    now = datetime.now(ZoneInfo(TELEGRAM_TZ)) if TELEGRAM_TZ else datetime.now().astimezone()
+    slot = now.replace(hour=SHOWS_SYNC_HOUR, minute=0, second=0, microsecond=0)
+    if slot > now:
+        slot -= timedelta(days=1)
+    slot = slot.astimezone().replace(tzinfo=None)  # server-local, like every stored timestamp
+
+    last = _last_shows_sync
+    if last is None:
+        with get_conn() as conn:
+            oldest = conn.execute(
+                "SELECT MIN(last_synced_at) FROM shows WHERE media_type = 'tv' AND status != 'abandonne'"
+            ).fetchone()[0]
+        if oldest is None:
+            return False  # rien à synchroniser
+        last = datetime.fromisoformat(oldest)
+    return last < slot
+
+
+def _shows_sync_check() -> None:
+    """Every SHOWS_SYNC_CHECK_MINUTES: run the daily show sync once it's due."""
+    if tmdb.is_configured() and shows_sync_due():
+        sync_and_notify_shows()
+
+
 def sync_and_notify_shows() -> bool:
     """Daily: re-sync tracked shows from TMDb, then announce episodes that just
-    aired and are not yet marked watched (each episode is announced only once).
+    aired and are not yet marked watched (each episode is announced only once,
+    grouped into one line per show).
 
     Every non-abandoned show is re-synced, including `termine` ones: TMDb can
     renew a show after we'd caught up on everything that existed so far, and
@@ -219,23 +266,31 @@ def sync_and_notify_shows() -> bool:
             refresh_show(show_id)
         except TMDbError:
             continue
+    global _last_shows_sync
+    _last_shows_sync = datetime.now()
 
     with get_conn() as conn:
         due = rows_to_dicts(conn.execute(
-            """SELECT e.id, e.season_number, e.episode_number, e.name, s.title
+            """SELECT e.id, e.season_number, e.episode_number, e.name, s.id AS show_id, s.title
                FROM show_episodes e JOIN shows s ON s.id = e.show_id
                WHERE e.air_date IS NOT NULL AND e.air_date <= date('now')
                  AND e.watched_at IS NULL AND e.notified_at IS NULL
                  AND s.status IN ('a_voir', 'en_cours')
-               ORDER BY s.title, e.season_number, e.episode_number"""
+               ORDER BY s.title, s.id, e.season_number, e.episode_number"""
         ).fetchall())
     if not due:
         return False
 
+    # Une ligne par série : un rattrapage de 80 épisodes reste une ligne lisible.
     lines = ["📺 Nouveaux épisodes disponibles", ""]
-    for e in due:
-        title_bit = f" « {e['name']} »" if e["name"] else ""
-        lines.append(f"• {e['title']} — S{e['season_number']:02d}E{e['episode_number']:02d}{title_bit}")
+    for _, group in groupby(due, key=lambda e: e["show_id"]):
+        eps = list(group)
+        first, last = eps[0], eps[-1]
+        if len(eps) == 1:
+            title_bit = f" « {first['name']} »" if first["name"] else ""
+            lines.append(f"• {first['title']} — {_ep_code(first)}{title_bit}")
+        else:
+            lines.append(f"• {first['title']} — {len(eps)} épisodes ({_ep_code(first)} → {_ep_code(last)})")
     sent = telegram.send_message("\n".join(lines))
     if sent:
         with get_conn() as conn:
@@ -741,7 +796,6 @@ def start() -> None:
     telegram.register_command("/help", _help_command)
     add_cron_job(send_watering_check, 9, 0)
     add_cron_job(send_watering_check, 21, 0)
-    add_cron_job(sync_and_notify_shows, 8, 0)
 
     global _scheduler
     if _scheduler is None:
@@ -752,6 +806,14 @@ def start() -> None:
                 CronTrigger(hour=hour, minute=minute, timezone=TELEGRAM_TZ or None),
                 id=f"bot-{func.__name__}-{hour:02d}{minute:02d}",
             )
+        _scheduler.add_job(
+            _shows_sync_check,
+            CronTrigger(minute=f"*/{SHOWS_SYNC_CHECK_MINUTES}", timezone=TELEGRAM_TZ or None),
+            id="bot-shows-sync-check",
+            next_run_time=datetime.now().astimezone(),  # rattrape aussi au démarrage
+            coalesce=True,
+            misfire_grace_time=None,  # un contrôle en retard (machine en veille) tourne quand même
+        )
         _scheduler.start()
     telegram.start_polling()
 
@@ -785,5 +847,5 @@ def watering_check():
 
 @router.post("/shows-check", status_code=200)
 def shows_check():
-    """Trigger a show sync + new-episode check right now (same logic as the 08:00 cron)."""
+    """Trigger a show sync + new-episode check right now (same logic as the daily 08:00 sync)."""
     return {"sent": sync_and_notify_shows(), "configured": telegram.is_configured()}

@@ -35,15 +35,47 @@ def is_configured() -> bool:
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
 
+MAX_MESSAGE_LEN = 4096  # Telegram's cap, in UTF-16 code units — anything longer is rejected (400)
+
+
+def _tg_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def split_message(text: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
+    """Cut `text` on line breaks into pieces that each fit in one message."""
+    chunks, current = [], ""
+    for line in text.split("\n"):
+        while _tg_len(line) > limit:  # a single line longer than a whole message
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[: limit // 2])  # ≤ 2 UTF-16 units per character
+            line = line[limit // 2:]
+        candidate = f"{current}\n{line}" if current else line
+        if current and _tg_len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 def send_message(text: str, chat_id: Optional[int] = None) -> bool:
-    """Send a plain-text message to the configured chat. Returns True on success."""
+    """Send a plain-text message to the configured chat. Returns True on success.
+
+    Text over Telegram's length cap goes out as several messages, cut on line
+    breaks — sent whole, it would be rejected outright, every single time."""
     if not is_configured():
         logger.info("Telegram not configured — message not sent")
         return False
     target = chat_id or TELEGRAM_CHAT_ID
     try:
-        r = httpx.post(f"{API}/sendMessage", json={"chat_id": target, "text": text}, timeout=10)
-        r.raise_for_status()
+        for chunk in split_message(text):
+            r = httpx.post(f"{API}/sendMessage", json={"chat_id": target, "text": chunk}, timeout=10)
+            r.raise_for_status()
         return True
     except httpx.HTTPError:
         logger.exception("Telegram sendMessage failed")

@@ -54,12 +54,15 @@ local network. Current features:
    **Découvrir** tab surfaces TMDb's trending titles and search. Marking an
    episode watched (or a whole season via « ✅ Tout marquer ») auto-promotes
    a show from `a_voir` to `en_cours`, and auto-closes it to `termine` once
-   TMDb says it's over and every aired episode is watched.
+   TMDb says it's over and every aired episode is watched. A `termine` show
+   that gets a new season stays visible (calendar + « 🔔 Reprend » on its
+   card) and reopens to `en_cours` the day the first new episode airs.
 7. **Telegram bot** — general-purpose notification channel. Daily **watering
    reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`), a daily
-   **show sync + new-episode digest** at 08:00 (re-pulls followed shows from
-   TMDb, announces — once — any episode that just aired and isn't marked
-   watched yet), the read-only `/plantes`, `/envies`, `/cartons`, `/sortis`,
+   **show sync + new-episode digest** due from 08:00 (re-pulls followed shows
+   from TMDb, announces — once, one line per show — any episode that aired
+   and isn't marked watched yet; if the host was asleep or down at 08:00 it
+   runs as soon as it's back), the read-only `/plantes`, `/envies`, `/cartons`, `/sortis`,
    `/ou` and `/series` commands, and two **plain-French write paths**
    running through an LLM (`app/nlu.py`): **adding a wish** (« /envie un
    casque Sony vers 350.- pour Lea ») and **updating the storage inventory**
@@ -140,7 +143,12 @@ static/
                      Envies / Rangement / Séries)
                      Chaque carte d'accueil branchée au bot porte un « (i) »
                      qui explique ses commandes Telegram (HOME_HELP dans app.js)
-  style.css          theme (dark botanical)
+                     The current view lives in the URL hash (#plants, #storage…),
+                     so reload / back / deep links land on the right tab.
+  style.css          light "Carnet" theme (dotted paper, ink blue, Caveat + Karla
+                     from Google Fonts). Colours/fonts/radii are CSS variables in
+                     :root; notebook-specific touches sit at the end of the file.
+                     Phones (≤ 760 px) get a bottom tab bar and bottom-sheet modals.
   app.js             all frontend logic, fetch-based
 data/dashboard.db    SQLite data (committed, portable)
 data/photos/         plant, dish & wish photos (committed like the DB)
@@ -216,7 +224,7 @@ locally: `http://localhost:8000`.
 | What's trending on TMDb | `GET /api/shows/trending?window=day\|week&media_type=all\|movie\|tv` |
 | Tracked shows/movies | `GET /api/shows?status=&media_type=` |
 | Add something to the tracker | `POST /api/shows` body `{"tmdb_id", "media_type", "status"?}` — 409 if already tracked |
-| Upcoming episodes (followed shows) | `GET /api/shows/calendar?days=30` |
+| Upcoming episodes (every show but `abandonne`, `termine` included) | `GET /api/shows/calendar?days=30` |
 | Viewing stats (status/genre mix, watch time, monthly activity, ratings) | `GET /api/shows/stats` |
 | Get one tracked show/movie (+ episodes) | `GET /api/shows/{id}` |
 | Update status/rating/notes | `PUT /api/shows/{id}` body `{"status"?, "rating"?, "notes"?}` — only given fields change; `"rating": null` clears it |
@@ -226,7 +234,7 @@ locally: `http://localhost:8000`.
 | List a show's episodes | `GET /api/shows/{id}/episodes` |
 | Mark one episode watched/unwatched | `POST /api/shows/{id}/episodes/{episode_id}/watched` body `{"watched": true, "at"?}` |
 | Catch-up a whole season | `POST /api/shows/{id}/seasons/{season_number}/watched` |
-| Trigger the show sync + Telegram digest | `POST /api/bot/shows-check` (same logic as the 08:00 cron) |
+| Trigger the show sync + Telegram digest | `POST /api/bot/shows-check` (same logic as the daily 08:00 sync) |
 
 ### Conventions agents must know
 
@@ -350,11 +358,16 @@ locally: `http://localhost:8000`.
   watched promotes a show from `a_voir` to `en_cours` automatically, and —
   once TMDb says the show is `Ended`/`Canceled` and every aired episode is
   watched — closes it to `termine` (`_maybe_autocomplete`). The reverse also
-  happens: if TMDb later renews a `termine` show, or a sync pulls in an
-  episode that isn't watched yet, it reopens to `en_cours`
-  (`_maybe_reopen`) — otherwise a finished show would go stale forever the
-  moment it got renewed. Nobody has to remember to flip the status by hand
-  either way.
+  happens: a `termine` show reopens to `en_cours` (`_maybe_reopen`) once a
+  **new regular episode actually airs** — unwatched, `season_number > 0`,
+  aired since the previous sync (or first pulled in by this sync already
+  aired). TMDb merely calling it « Returning Series » does **not** reopen it
+  (that would undo a « Terminé » every morning for months), nor do specials
+  or episodes that were already unwatched when it was marked done. Until the
+  new season airs, a renewed `termine` show stays `termine` but its upcoming
+  episodes appear in `GET /api/shows/calendar` (which covers every show
+  except `abandonne`) and its card reads « 🔔 Reprend : S04E01 · date ».
+  Nobody has to remember to flip the status by hand either way.
 - **The daily sync covers every non-abandoned show, `termine` included**
   (`bot.sync_and_notify_shows` excludes only `abandonne`) — it has to, since
   `_maybe_reopen` (above) only fires *during* a sync. Only `abandonne` truly
@@ -362,10 +375,22 @@ locally: `http://localhost:8000`.
 - **A Telegram "new episode" announcement fires exactly once per episode**:
   `show_episodes.notified_at` is set right after `telegram.send_message()`
   succeeds (never on failure, so a network hiccup retries next day), and the
-  daily digest (08:00) only considers episodes with `air_date <= today AND
+  daily digest only considers episodes with `air_date <= today AND
   watched_at IS NULL AND notified_at IS NULL` on a show with status
   `a_voir`/`en_cours` — reached by a `termine` show only via `_maybe_reopen`
-  firing first, earlier in the same sync.
+  firing first, earlier in the same sync. The digest is **one line per
+  show** (« Rick et Morty — 87 épisodes (S00E01 → S09E10) »), and
+  `telegram.send_message()` cuts anything over Telegram's 4096-character cap
+  into several messages on line breaks — sent whole, an oversized message is
+  rejected, and it would have been rejected again every morning.
+- **The show sync is not a plain 08:00 cron**: the host sleeps overnight and
+  often wakes after 08:00, and APScheduler drops a run more than a second
+  late (or never learns of it after a restart). `_shows_sync_check` runs
+  every 15 min (and once at startup) and syncs only when `shows_sync_due()`:
+  the latest 08:00 slot (`SHOWS_SYNC_HOUR`, `TELEGRAM_TZ`) has passed since
+  the last full sync — tracked in memory, falling back after a restart to the
+  oldest `last_synced_at` of the shows it covers. On a normal day it still
+  runs at 08:00 sharp.
 - **Telegram bot**: a generic module (`app/telegram.py`) + feature wiring
   (`app/bot.py`). Features register cron jobs with `bot.add_cron_job(func,
   hour, minute)` (daily, server-local time or `TELEGRAM_TZ`) and commands with

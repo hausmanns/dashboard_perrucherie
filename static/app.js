@@ -76,20 +76,64 @@ document.querySelectorAll("[data-close]").forEach((b) =>
 
 /* ---------------- Navigation ---------------- */
 
+// L'onglet courant vit dans l'URL (#plants…) : recharger la page ou faire
+// « retour » ramène au bon endroit.
+function showView(view) {
+  const tab = document.querySelector(`.tab[data-view="${view}"]`);
+  if (!tab || tab.classList.contains("active")) return;
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.classList.toggle("active", t === tab);
+    t.toggleAttribute("aria-current", t === tab);
+  });
+  document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
+  window.scrollTo(0, 0);
+}
+
 document.querySelectorAll(".tab").forEach((tab) =>
   tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    tab.classList.add("active");
-    $(`#view-${tab.dataset.view}`).classList.add("active");
+    showView(tab.dataset.view);
+    if (location.hash.slice(1) !== tab.dataset.view) location.hash = tab.dataset.view;
   })
 );
+window.addEventListener("hashchange", () => showView(location.hash.slice(1) || "home"));
+if (location.hash.length > 1) showView(location.hash.slice(1));
 
 /* ---------------- Accueil ---------------- */
+
+/** Petit mot d'accueil : la date et, en une phrase, ce qui compte aujourd'hui. */
+function renderHello(s) {
+  const el = $("#home-hello");
+  if (!el) return;
+  const now = new Date();
+  const h = now.getHours();
+  const greet = h < 5 ? "Bonne nuit" : h < 12 ? "Bonjour" : h < 18 ? "Bel après-midi" : "Bonsoir";
+  const day = now.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  const n = (count, one, many) => `${count} ${count > 1 ? many : one}`;
+
+  const bits = [s.plants.due_count
+    ? `${n(s.plants.due_count, "plante a", "plantes ont")} soif`
+    : "les plantes n'ont besoin de rien"];
+  if (s.meals.today.length) bits.push(`au menu : ${s.meals.today.map((m) => esc(m.dish)).join(", ")}`);
+  if (s.grocery.items_on_list) bits.push(`${n(s.grocery.items_on_list, "article attend", "articles attendent")} sur la liste de courses`);
+  const bday = s.wishlist.upcoming_birthdays[0];
+  if (bday) {
+    bits.push(bday.days_until_birthday === 0
+      ? `c'est l'anniversaire de ${esc(bday.name)} 🎂`
+      : `l'anniversaire de ${esc(bday.name)} arrive dans ${n(bday.days_until_birthday, "jour", "jours")}`);
+  }
+  if (s.shows.new_episodes_count) bits.push(`${n(s.shows.new_episodes_count, "épisode", "épisodes")} à rattraper`);
+  const sentence = bits.length > 1 ? bits.slice(0, -1).join(", ") + " et " + bits[bits.length - 1] : bits[0];
+
+  el.innerHTML = `
+    <p class="hello-date">${day}</p>
+    <h2 class="hello-title">${greet}&nbsp;!</h2>
+    <p class="hello-line">${sentence.charAt(0).toUpperCase() + sentence.slice(1)}.</p>`;
+}
 
 async function loadHome() {
   try {
     const s = await api.get("/api/summary");
+    renderHello(s);
 
     const dueBox = $("#home-due-plants");
     if (s.plants.due.length === 0) {
@@ -97,8 +141,11 @@ async function loadHome() {
     } else {
       dueBox.innerHTML = s.plants.due.map((p) => `
         <div class="home-item">
+          ${p.photo
+            ? `<img class="home-thumb" src="/api/plants/${p.id}/photo" alt="" loading="lazy" />`
+            : `<span class="home-thumb">${plantEmoji(p.name)}</span>`}
           <div class="info">
-            <strong>${plantEmoji(p.name)} ${p.name}</strong>
+            <strong>${p.name}</strong>
             <small>${statusLabel(p)}${p.location ? " · " + p.location : ""}</small>
           </div>
           <button class="btn btn-primary btn-sm" onclick="waterPlant(${p.id})">Arroser</button>
@@ -112,7 +159,7 @@ async function loadHome() {
       mealBox.innerHTML = `<p class="muted">Rien de prévu aujourd'hui dans « ${s.meals.active_plan.name} ».</p>`;
     } else {
       mealBox.innerHTML = s.meals.today.map((m) => `
-        <div class="home-item"><div class="info"><strong>🍽️ ${m.dish}</strong><small>Repas ${m.slot_index}</small></div></div>
+        <div class="home-item"><span class="home-thumb">🍽️</span><div class="info"><strong>${m.dish}</strong><small>Repas ${m.slot_index}</small></div></div>
       `).join("");
     }
 
@@ -124,8 +171,9 @@ async function loadHome() {
       wishBox.innerHTML = (birthdays.length
         ? birthdays.map((b) => `
           <div class="home-item">
+            <span class="home-thumb">${b.emoji}</span>
             <div class="info">
-              <strong>${b.emoji} ${b.name}</strong>
+              <strong>${b.name}</strong>
               <small>🎂 ${b.days_until_birthday === 0 ? "c'est aujourd'hui !" : `dans ${b.days_until_birthday} jours`}</small>
             </div>
           </div>`).join("")
@@ -141,8 +189,11 @@ async function loadHome() {
     } else {
       showsBox.innerHTML = s.shows.new_episodes.map((sh) => `
         <div class="home-item">
+          ${sh.poster_url
+            ? `<img class="home-thumb home-thumb-poster" src="${sh.poster_url}" alt="" loading="lazy" />`
+            : `<span class="home-thumb">🎬</span>`}
           <div class="info">
-            <strong>🎬 ${sh.title}</strong>
+            <strong>${sh.title}</strong>
             <small>🆕 ${sh.unwatched_aired_episodes} épisode(s) à voir</small>
           </div>
           <button class="btn btn-primary btn-sm" onclick="goToShow(${sh.id})">Voir</button>
@@ -1824,9 +1875,11 @@ function showCard(s) {
   } else if (newCount) {
     nextLine = `🆕 ${newCount} épisode${newCount > 1 ? "s" : ""} à voir`;
   } else if (s.next_episode && s.next_episode.air_date) {
-    nextLine = `Prochain : S${pad2(s.next_episode.season_number)}E${pad2(s.next_episode.episode_number)} · ${stFmtDate(s.next_episode.air_date)}`;
+    const ep = `S${pad2(s.next_episode.season_number)}E${pad2(s.next_episode.episode_number)} · ${stFmtDate(s.next_episode.air_date)}`;
+    // Terminé mais relancée par TMDb : on le signale, elle repassera « En cours » à la diffusion.
+    nextLine = s.status === "termine" ? `🔔 Reprend : ${ep}` : `Prochain : ${ep}`;
   } else if (s.is_ongoing) {
-    nextLine = "À jour ✅";
+    nextLine = s.status === "termine" ? "🔔 Nouvelle saison attendue" : "À jour ✅";
   }
 
   return `
@@ -2343,7 +2396,7 @@ const HOME_HELP = {
     needsAI: false,
     paragraphs: [
       "<code>/series</code> — ce qui est en cours, les nouveaux épisodes à voir et le nombre de films en attente.",
-      "Chaque jour à <b>08:00</b>, le bot resynchronise les séries suivies avec TMDb et annonce les épisodes qui viennent de sortir et ne sont pas encore marqués vus — un seul message par épisode, jamais deux fois.",
+      "Chaque jour dès <b>08:00</b> (ou au réveil de la machine si elle dormait), le bot resynchronise les séries suivies avec TMDb et annonce les épisodes qui viennent de sortir et ne sont pas encore marqués vus — une ligne par série, et jamais deux fois le même épisode.",
       "Ajouter une série/un film, marquer un épisode vu, noter et commenter se fait dans l'onglet Séries — ce n'est pas (encore) du langage naturel Telegram.",
     ],
     chat: [

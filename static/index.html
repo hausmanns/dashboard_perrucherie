@@ -2,61 +2,78 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard de la Perrucherie</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>La Perrucherie</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Karla:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="/static/style.css" />
+  <meta name="theme-color" content="#fbf7ee" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦜</text></svg>" />
 </head>
 <body>
+  <!-- Icônes (tracés inspirés de Lucide, ISC) — utilisées via <use href="#i-…"> -->
+  <svg class="icon-sprite" aria-hidden="true" style="display:none">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-plant" viewBox="0 0 24 24"><path d="M7 20h10"/><path d="M10 20c5.5-2.5.8-6.4 3-10"/><path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z"/><path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z"/></symbol>
+    <symbol id="i-meals" viewBox="0 0 24 24"><path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/></symbol>
+    <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></symbol>
+    <symbol id="i-gift" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.7 4.73a2 2 0 0 0 2 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/></symbol>
+    <symbol id="i-tv" viewBox="0 0 24 24"><rect width="20" height="15" x="2" y="7" rx="2"/><path d="m17 2-5 5-5-5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/></symbol>
+  </svg>
+
   <header class="topbar">
     <div class="brand">
       <span class="brand-emoji">🦜</span>
       <div>
         <h1>La Perrucherie</h1>
-        <p class="subtitle">Dashboard de la maison</p>
+        <p class="subtitle">La maison, au quotidien</p>
       </div>
     </div>
     <nav class="tabs">
-      <button class="tab active" data-view="home">🏠 Accueil</button>
-      <button class="tab" data-view="plants">🌿 Plantes <span id="plants-badge" class="badge hidden"></span></button>
-      <button class="tab" data-view="meals">🍽️ Repas</button>
-      <button class="tab" data-view="grocery">🛒 Courses</button>
-      <button class="tab" data-view="wishlist">🎁 Envies</button>
-      <button class="tab" data-view="storage">📦 Rangement <span id="storage-badge" class="badge hidden"></span></button>
-      <button class="tab" data-view="shows">🎬 Séries <span id="shows-badge" class="badge hidden"></span></button>
+      <button class="tab active" data-view="home"><svg class="ico"><use href="#i-home"/></svg><span class="tab-lbl">Accueil</span></button>
+      <button class="tab" data-view="plants"><svg class="ico"><use href="#i-plant"/></svg><span class="tab-lbl">Plantes</span><span id="plants-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="meals"><svg class="ico"><use href="#i-meals"/></svg><span class="tab-lbl">Repas</span></button>
+      <button class="tab" data-view="grocery"><svg class="ico"><use href="#i-cart"/></svg><span class="tab-lbl">Courses</span></button>
+      <button class="tab" data-view="wishlist"><svg class="ico"><use href="#i-gift"/></svg><span class="tab-lbl">Envies</span></button>
+      <button class="tab" data-view="storage"><svg class="ico"><use href="#i-box"/></svg><span class="tab-lbl">Rangement</span><span id="storage-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="shows"><svg class="ico"><use href="#i-tv"/></svg><span class="tab-lbl">Séries</span><span id="shows-badge" class="badge hidden"></span></button>
     </nav>
-    <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage">🔔</button>
+    <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage" aria-label="Activer les notifications d'arrosage"><svg class="ico"><use href="#i-bell"/></svg></button>
   </header>
 
   <main>
     <!-- ================= ACCUEIL ================= -->
     <section id="view-home" class="view active">
+      <div id="home-hello" class="home-hello"></div>
       <div class="home-grid">
-        <div class="card home-card">
+        <div class="card home-card" data-sec="plants">
           <h2>🌿 Arrosages à faire<button class="info-btn" data-help="plants" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-plants"></div>
           <div id="home-due-plants" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
-        <div class="card home-card">
+        <div class="card home-card" data-sec="meals">
           <h2>🍽️ Repas du jour</h2>
           <div id="home-today-meals" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
-        <div class="card home-card">
+        <div class="card home-card" data-sec="wishlist">
           <h2>🎁 Cadeaux à prévoir<button class="info-btn" data-help="wishlist" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-wishlist"></div>
           <div id="home-wishlist" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
-        <div class="card home-card">
+        <div class="card home-card" data-sec="storage">
           <h2>📦 Sortis des cartons<button class="info-btn" data-help="storage" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-storage"></div>
           <div id="home-storage" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
-        <div class="card home-card">
+        <div class="card home-card" data-sec="shows">
           <h2>🎬 Nouveaux épisodes<button class="info-btn" data-help="shows" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-shows"></div>
           <div id="home-shows" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
-        <div class="card home-card">
+        <div class="card home-card" data-sec="stats">
           <h2>📊 En bref</h2>
           <div id="home-stats" class="stats"></div>
         </div>
@@ -68,7 +85,7 @@
       <div class="section-head">
         <h2>Mes plantes</h2>
         <div class="plan-actions">
-          <button class="btn btn-primary" id="water-all-btn">💧 Tout arroser</button>
+          <button class="btn btn-ghost" id="water-all-btn">💧 Tout arroser</button>
           <button class="btn btn-primary" id="add-plant-btn">+ Ajouter une plante</button>
         </div>
       </div>

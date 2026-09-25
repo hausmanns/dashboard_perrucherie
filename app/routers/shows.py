@@ -195,19 +195,31 @@ def _sync_movie(conn, show_id: int, tmdb_id: int) -> dict:
     return dict(_get_show_row(conn, show_id))
 
 
-def _maybe_reopen(conn, show_id: int) -> None:
-    """A `termine` show that turns out not to be finished after all — TMDb
-    renewed it, or this sync just pulled in a not-yet-watched episode —
-    reopens to `en_cours`. Without this, a completed show would go stale:
-    the daily sync/notification only looks at `a_voir`/`en_cours` shows, so
-    a season announced after you'd caught up would otherwise be silently
-    missed forever."""
+def _maybe_reopen(conn, show_id: int, synced_before: Optional[str], last_known_episode_id: int) -> None:
+    """A `termine` show reopens to `en_cours` once something new has actually
+    aired: an unwatched regular-season episode whose air date passed since
+    the previous sync (`synced_before`), or that this sync pulled in for the
+    first time already aired (id above `last_known_episode_id`). The digest
+    that runs right after the sync then announces it.
+
+    Only *new* airings count. TMDb saying « Returning Series » doesn't — that
+    can last a year with nothing to watch, and would undo a « Terminé » every
+    morning — and neither do specials (season 0) or episodes that were
+    already unwatched when the show was marked done. Until the new season
+    airs, the show stays `termine` and its upcoming episodes show up in the
+    calendar and on its card instead."""
     row = _get_show_row(conn, show_id)
-    if row["status"] != "termine":
+    if row["status"] != "termine" or not synced_before:
         return
-    counts = _episode_counts(conn, show_id)
-    has_unwatched = counts["total_episodes"] > counts["watched_episodes"]
-    if row["tmdb_status"] in ONGOING_TMDB_STATUSES or has_unwatched:
+    fresh = conn.execute(
+        """SELECT 1 FROM show_episodes
+           WHERE show_id = ? AND season_number > 0 AND watched_at IS NULL
+             AND air_date IS NOT NULL AND air_date <= date('now')
+             AND (air_date > date(?) OR id > ?)
+           LIMIT 1""",
+        (show_id, synced_before, last_known_episode_id),
+    ).fetchone()
+    if fresh:
         conn.execute("UPDATE shows SET status='en_cours', updated_at=? WHERE id=?", (_now(), show_id))
 
 
@@ -216,8 +228,11 @@ def refresh_show(show_id: int, full: bool = False) -> dict:
     with get_conn() as conn:
         row = _get_show_row(conn, show_id)
         if row["media_type"] == "tv":
+            last_known_episode_id = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM show_episodes WHERE show_id = ?", (show_id,)
+            ).fetchone()[0]
             _sync_tv(conn, show_id, row["tmdb_id"], full=full)
-            _maybe_reopen(conn, show_id)
+            _maybe_reopen(conn, show_id, row["last_synced_at"], last_known_episode_id)
         else:
             _sync_movie(conn, show_id, row["tmdb_id"])
         return _enrich_show(conn, dict(_get_show_row(conn, show_id)))
@@ -428,7 +443,8 @@ def stats():
 def calendar(days: int = Query(30, ge=1, le=180)):
     """Upcoming episodes of followed shows — the « Calendrier » tab.
 
-    Only shows with status `a_voir`/`en_cours` (not abandoned or archived-by-completion).
+    Every show except abandoned ones — `termine` included, so a finished show
+    that TMDb renewed shows up here before its new season airs.
     """
     with get_conn() as conn:
         rows = rows_to_dicts(conn.execute(
@@ -436,7 +452,7 @@ def calendar(days: int = Query(30, ge=1, le=180)):
                       s.id AS show_id, s.title, s.poster_path, s.status AS show_status
                FROM show_episodes e JOIN shows s ON s.id = e.show_id
                WHERE e.air_date IS NOT NULL AND e.air_date BETWEEN date('now') AND date('now', ?)
-                 AND s.status IN ('a_voir', 'en_cours')
+                 AND s.status != 'abandonne'
                ORDER BY e.air_date, s.title""",
             (f"+{days} days",),
         ).fetchall())
