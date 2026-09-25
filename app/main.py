@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, get_conn, init_db
 from . import bot
-from .routers import grocery, meals, plants, storage, wishlist
+from .routers import grocery, meals, plants, shows, storage, wishlist
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -23,8 +23,8 @@ app = FastAPI(
     title="Dashboard de la Perrucherie",
     description=(
         "Dashboard de gestion de la maison : suivi des plantes (arrosage, rappels), "
-        "planification des repas (meal prep), listes d'envies/cadeaux et inventaire "
-        "des cartons de rangement. API REST "
+        "planification des repas (meal prep), listes d'envies/cadeaux, inventaire "
+        "des cartons de rangement et suivi des séries/films (TMDb). API REST "
         "complète, pensée pour être lue et écrite par des agents."
     ),
     version="0.1.0",
@@ -35,6 +35,7 @@ app.include_router(meals.router)
 app.include_router(grocery.router)
 app.include_router(wishlist.router)
 app.include_router(storage.router)
+app.include_router(shows.router)
 app.include_router(bot.router)
 
 
@@ -88,6 +89,14 @@ def summary():
     # Ce qui est sorti des cartons : le seul état « en cours » du rangement.
     items_out = storage.list_items(status="out")
 
+    # Séries/films suivis, et ceux qui ont un épisode diffusé mais pas encore vu.
+    all_shows = shows.list_shows()
+    watching_shows = [s for s in all_shows if s["status"] == "en_cours"]
+    new_episode_shows = [
+        s for s in all_shows
+        if s["status"] in ("a_voir", "en_cours") and s["unwatched_aired_episodes"]
+    ]
+
     # Anniversaires dans les 60 jours — le bon moment pour piocher dans une liste d'envies.
     upcoming_birthdays = [
         {"name": p["name"], "emoji": p["emoji"], "days_until_birthday": p["days_until_birthday"]}
@@ -125,6 +134,12 @@ def summary():
             "total_wishes": total_wishes,
             "open_wishes": open_wishes,          # encore à offrir
             "upcoming_birthdays": upcoming_birthdays,
+        },
+        "shows": {
+            "total": len(all_shows),
+            "watching": len(watching_shows),
+            "new_episodes_count": sum(s["unwatched_aired_episodes"] for s in new_episode_shows),
+            "new_episodes": new_episode_shows,   # diffusés, pas encore vus
         },
     }
 

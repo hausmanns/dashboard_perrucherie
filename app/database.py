@@ -161,6 +161,51 @@ CREATE TABLE IF NOT EXISTS fridge_items (
     source   TEXT NOT NULL DEFAULT 'manual',    -- manual | grocery (acheté depuis la liste)
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS shows (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    tmdb_id              INTEGER NOT NULL,
+    media_type           TEXT NOT NULL,              -- tv | movie
+    title                TEXT NOT NULL,
+    overview             TEXT DEFAULT '',
+    poster_path          TEXT DEFAULT '',
+    backdrop_path        TEXT DEFAULT '',
+    first_air_date       TEXT DEFAULT '',             -- sortie / première diffusion (ISO date)
+    tmdb_status          TEXT DEFAULT '',             -- statut TMDb (Returning Series, Ended, Released…)
+    status               TEXT NOT NULL DEFAULT 'a_voir', -- a_voir | en_cours | termine | abandonne
+    rating               INTEGER,                     -- 1-5 étoiles
+    notes                TEXT DEFAULT '',
+    genres               TEXT DEFAULT '',             -- genres TMDb, séparés par des virgules
+    runtime_minutes      INTEGER,                     -- films uniquement (durée) ; NULL pour les séries
+    vote_average         REAL,                        -- note TMDb (0-10), pour le panneau de stats
+    next_episode_air_date   TEXT,                      -- cache TMDb : calendrier + rappels Telegram
+    next_episode_season     INTEGER,
+    next_episode_number     INTEGER,
+    next_episode_name       TEXT DEFAULT '',
+    watched_at           TEXT,                         -- films : date où marqué vu
+    last_synced_at       TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (tmdb_id, media_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_shows_status ON shows(status);
+
+CREATE TABLE IF NOT EXISTS show_episodes (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    show_id        INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+    season_number  INTEGER NOT NULL,
+    episode_number INTEGER NOT NULL,
+    name           TEXT DEFAULT '',
+    overview       TEXT DEFAULT '',
+    air_date       TEXT,                              -- ISO date, NULL = pas encore programmé
+    watched_at     TEXT,
+    notified_at    TEXT,                               -- déjà signalé sur Telegram
+    runtime_minutes INTEGER,                            -- durée TMDb, pour le panneau de stats
+    UNIQUE (show_id, season_number, episode_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_show_episodes_show ON show_episodes(show_id);
 """
 
 
@@ -193,6 +238,18 @@ def _migrate(conn) -> None:
     grocery_cols = {r["name"] for r in conn.execute("PRAGMA table_info(grocery_items)")}
     if "dish_id" not in grocery_cols:
         conn.execute("ALTER TABLE grocery_items ADD COLUMN dish_id INTEGER REFERENCES dishes(id) ON DELETE CASCADE")
+
+    show_cols = {r["name"] for r in conn.execute("PRAGMA table_info(shows)")}
+    if "genres" not in show_cols:
+        conn.execute("ALTER TABLE shows ADD COLUMN genres TEXT DEFAULT ''")
+    if "runtime_minutes" not in show_cols:
+        conn.execute("ALTER TABLE shows ADD COLUMN runtime_minutes INTEGER")
+    if "vote_average" not in show_cols:
+        conn.execute("ALTER TABLE shows ADD COLUMN vote_average REAL")
+
+    episode_cols = {r["name"] for r in conn.execute("PRAGMA table_info(show_episodes)")}
+    if "runtime_minutes" not in episode_cols:
+        conn.execute("ALTER TABLE show_episodes ADD COLUMN runtime_minutes INTEGER")
 
 
 @contextmanager

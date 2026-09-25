@@ -4,6 +4,8 @@ OPENROUTER_API_KEY  — required for every LLM feature: photo identification
                       (plants, dishes, wishes) and reading a wish written in
                       plain French on Telegram.
 OPENROUTER_MODEL    — model used for both (default: google/gemini-2.5-flash).
+TMDB_API_KEY        — required for the show tracker (search, trending,
+                      covers, synopsis, episodes) — see app/tmdb.py.
 """
 from __future__ import annotations
 
@@ -19,6 +21,12 @@ load_dotenv(BASE_DIR / ".env")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# The Movie Database (TMDb) — powers the show tracker (app/tmdb.py):
+# search, trending, covers, synopsis and episode-level data for the
+# episode calendar & Telegram "new episode" notifications.
+# Free key at https://www.themoviedb.org/settings/api
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 
 # Telegram bot (general-purpose notification channel).
 # TELEGRAM_BOT_TOKEN — token from @BotFather (required to enable the bot).

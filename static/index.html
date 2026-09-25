@@ -23,6 +23,7 @@
       <button class="tab" data-view="grocery">🛒 Courses</button>
       <button class="tab" data-view="wishlist">🎁 Envies</button>
       <button class="tab" data-view="storage">📦 Rangement <span id="storage-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="shows">🎬 Séries <span id="shows-badge" class="badge hidden"></span></button>
     </nav>
     <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage">🔔</button>
   </header>
@@ -49,6 +50,11 @@
           <h2>📦 Sortis des cartons<button class="info-btn" data-help="storage" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-storage"></div>
           <div id="home-storage" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card">
+          <h2>🎬 Nouveaux épisodes<button class="info-btn" data-help="shows" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-shows"></div>
+          <div id="home-shows" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
         <div class="card home-card">
           <h2>📊 En bref</h2>
@@ -187,6 +193,63 @@
         <div class="storage-stats" id="storage-stats"></div>
       </div>
       <div id="storage-results"></div>
+    </section>
+
+    <!-- ================= SÉRIES & FILMS ================= -->
+    <section id="view-shows" class="view">
+      <div class="section-head">
+        <h2>🎬 Séries &amp; films</h2>
+        <div class="seg" id="shows-mode">
+          <button class="seg-btn active" data-mode="library">Ma liste</button>
+          <button class="seg-btn" data-mode="calendar">📅 Calendrier</button>
+          <button class="seg-btn" data-mode="discover">✨ Découvrir</button>
+          <button class="seg-btn" data-mode="stats">📊 Stats</button>
+        </div>
+      </div>
+
+      <div id="shows-library-panel" class="shows-panel">
+        <div class="storage-filters">
+          <div class="chip-row" id="shows-status-chips">
+            <button class="chip active" data-status="">Tout</button>
+            <button class="chip" data-status="a_voir">À voir</button>
+            <button class="chip" data-status="en_cours">En cours</button>
+            <button class="chip" data-status="termine">Terminé</button>
+            <button class="chip" data-status="abandonne">Abandonné</button>
+          </div>
+          <div class="chip-row" id="shows-type-chips">
+            <button class="chip active" data-type="">Séries &amp; films</button>
+            <button class="chip" data-type="tv">📺 Séries</button>
+            <button class="chip" data-type="movie">🎞️ Films</button>
+          </div>
+        </div>
+        <div id="shows-grid" class="shows-grid"></div>
+      </div>
+
+      <div id="shows-calendar-panel" class="shows-panel hidden">
+        <p class="muted" style="margin-bottom:1rem">Épisodes des 30 prochains jours, pour ce qui est suivi.</p>
+        <div id="shows-calendar-list"></div>
+      </div>
+
+      <div id="shows-discover-panel" class="shows-panel hidden">
+        <div class="card storage-topcard">
+          <div class="storage-search">
+            <span class="search-icon">🔎</span>
+            <input id="shows-search-q" type="search" autocomplete="off"
+                   placeholder="Chercher une série ou un film à ajouter au suivi…" />
+          </div>
+          <div class="storage-filters" id="shows-discover-filters">
+            <div class="chip-row" id="shows-window-chips">
+              <button class="chip active" data-window="week">Tendances · semaine</button>
+              <button class="chip" data-window="day">Tendances · jour</button>
+            </div>
+          </div>
+        </div>
+        <div id="shows-discover-grid" class="shows-grid"></div>
+      </div>
+
+      <div id="shows-stats-panel" class="shows-panel hidden">
+        <div id="shows-stats-content"></div>
+      </div>
     </section>
   </main>
 
@@ -432,6 +495,14 @@
         <button type="submit" class="btn btn-primary">Sortir</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ================= MODALE SÉRIE / FILM (détail) ================= -->
+  <dialog id="show-modal" class="modal show-modal">
+    <div class="show-modal-close">
+      <button type="button" class="btn btn-ghost btn-sm" data-close>✕ Fermer</button>
+    </div>
+    <div id="show-modal-body"></div>
   </dialog>
 
   <div id="toast" class="toast hidden"></div>

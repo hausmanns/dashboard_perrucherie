@@ -12,6 +12,9 @@ feature registry. Features:
   `nlu.parse_wish_message()`, and whatever is missing (who it is for, the
   price, a link) is asked as a follow-up question. `/moi <prénom>` links a
   Telegram account to a person so « je veux… » needs no follow-up.
+- **show tracker digest** — `/series` reads what's being watched and what's
+  next; a daily sync (`sync_and_notify_shows`) re-pulls followed shows from
+  TMDb and announces episodes that just aired and are not yet marked watched.
 
 Future features should register their own cron jobs here (and in
 main.startup) via `add_cron_job()`.
@@ -27,11 +30,13 @@ from fastapi import APIRouter
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from . import telegram
+from . import telegram, tmdb
 from .config import OPENROUTER_API_KEY, TELEGRAM_TZ
+from .database import get_conn, rows_to_dicts
 from .nlu import parse_storage_message, parse_wish_details, parse_wish_message
 from .openrouter import LLMError
 from .routers.plants import due_plants
+from .routers.shows import list_shows, refresh_show
 from .routers.storage import (
     InIn,
     ItemIn,
@@ -56,6 +61,7 @@ from .routers.wishlist import (
     person_by_telegram_user,
     update_item,
 )
+from .tmdb import TMDbError
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
 
@@ -156,6 +162,88 @@ def wishlist_message(person_filter: str = "") -> str:
 
 def _wishlist_command(args: str, chat_id: int, user_id: int) -> str:
     return wishlist_message(args)
+
+
+# ---------------- Séries & films ----------------
+
+def _fmt_air_date(iso: str) -> str:
+    try:
+        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d/%m")
+    except ValueError:
+        return iso
+
+
+def shows_message() -> str:
+    """Build the French « what am I watching » digest for /series."""
+    watching = list_shows(status="en_cours", media_type="tv")
+    lines = ["🎬 Séries en cours", ""]
+    if not watching:
+        lines.append("Rien en cours — ajoutez une série dans l'onglet Séries.")
+    for s in watching:
+        new = s["unwatched_aired_episodes"]
+        mark = f" 🆕 {new} épisode(s) à voir" if new else " · à jour ✅"
+        next_bit = ""
+        if s["next_episode"] and s["next_episode"]["air_date"]:
+            ne = s["next_episode"]
+            next_bit = f"\n   Prochain : S{ne['season_number']:02d}E{ne['episode_number']:02d} le {_fmt_air_date(ne['air_date'])}"
+        lines.append(f"• {s['title']}{mark}{next_bit}")
+
+    to_watch_movies = list_shows(status="a_voir", media_type="movie")
+    if to_watch_movies:
+        lines += ["", f"🍿 {len(to_watch_movies)} film(s) à voir"]
+    return "\n".join(lines)
+
+
+def _shows_command(args: str, chat_id: int, user_id: int) -> str:
+    return shows_message()
+
+
+def sync_and_notify_shows() -> bool:
+    """Daily: re-sync tracked shows from TMDb, then announce episodes that just
+    aired and are not yet marked watched (each episode is announced only once).
+
+    Every non-abandoned show is re-synced, including `termine` ones: TMDb can
+    renew a show after we'd caught up on everything that existed so far, and
+    `refresh_show` reopens it to `en_cours` when that happens — skipping
+    `termine` here would mean that reopening (and the notification for the
+    episode that triggered it) never happens."""
+    if not tmdb.is_configured():
+        return False
+
+    with get_conn() as conn:
+        show_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM shows WHERE media_type = 'tv' AND status != 'abandonne'"
+        ).fetchall()]
+    for show_id in show_ids:
+        try:
+            refresh_show(show_id)
+        except TMDbError:
+            continue
+
+    with get_conn() as conn:
+        due = rows_to_dicts(conn.execute(
+            """SELECT e.id, e.season_number, e.episode_number, e.name, s.title
+               FROM show_episodes e JOIN shows s ON s.id = e.show_id
+               WHERE e.air_date IS NOT NULL AND e.air_date <= date('now')
+                 AND e.watched_at IS NULL AND e.notified_at IS NULL
+                 AND s.status IN ('a_voir', 'en_cours')
+               ORDER BY s.title, e.season_number, e.episode_number"""
+        ).fetchall())
+    if not due:
+        return False
+
+    lines = ["📺 Nouveaux épisodes disponibles", ""]
+    for e in due:
+        title_bit = f" « {e['name']} »" if e["name"] else ""
+        lines.append(f"• {e['title']} — S{e['season_number']:02d}E{e['episode_number']:02d}{title_bit}")
+    sent = telegram.send_message("\n".join(lines))
+    if sent:
+        with get_conn() as conn:
+            conn.executemany(
+                "UPDATE show_episodes SET notified_at = ? WHERE id = ?",
+                [(datetime.now().isoformat(timespec="seconds"), e["id"]) for e in due],
+            )
+    return sent
 
 
 # ---------------- Ajouter une envie en langage naturel ----------------
@@ -388,6 +476,9 @@ def _help_command(args: str, chat_id: int, user_id: int) -> str:
         "/sortis — ce qui est actuellement hors carton\n"
         "/sorti <texte> — « /sorti le wetsuit long du carton 2, prêté à Tom »\n"
         "/range <texte> — « /range le stéthoscope »\n"
+        "\n"
+        "Séries & films :\n"
+        "/series — ce qui est en cours, les nouveaux épisodes, les films à voir\n"
         "\n"
         "En message privé, pas besoin de commande : écris ton envie ou ce que tu sors "
         "d'un carton normalement, je comprends et je mets à jour."
@@ -644,11 +735,13 @@ def start() -> None:
     telegram.register_command("/ou", _where_command)
     telegram.register_command("/sorti", _take_out_command)
     telegram.register_command("/range", _put_back_command)
+    telegram.register_command("/series", _shows_command)
     telegram.register_text_handler(_storage_text_handler)
     telegram.register_text_handler(_wish_text_handler)
     telegram.register_command("/help", _help_command)
     add_cron_job(send_watering_check, 9, 0)
     add_cron_job(send_watering_check, 21, 0)
+    add_cron_job(sync_and_notify_shows, 8, 0)
 
     global _scheduler
     if _scheduler is None:
@@ -680,6 +773,7 @@ def bot_status():
     return {
         "telegram_configured": telegram.is_configured(),
         "ai_configured": bool(OPENROUTER_API_KEY),
+        "tmdb_configured": tmdb.is_configured(),
     }
 
 
@@ -687,3 +781,9 @@ def bot_status():
 def watering_check():
     """Trigger a watering check right now (same logic as the 09:00/21:00 cron)."""
     return {"sent": send_watering_check(), "configured": telegram.is_configured()}
+
+
+@router.post("/shows-check", status_code=200)
+def shows_check():
+    """Trigger a show sync + new-episode check right now (same logic as the 08:00 cron)."""
+    return {"sent": sync_and_notify_shows(), "configured": telegram.is_configured()}

@@ -27,4 +27,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - TELEGRAM_TZ=${TELEGRAM_TZ:-}
+      # Show tracker (search, trending, covers, episodes) — TMDb API key
+      # (the short v3 "API Key", not the "API Read Access Token" JWT).
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
     restart: unless-stopped

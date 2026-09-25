@@ -133,6 +133,25 @@ async function loadHome() {
         + `<p class="muted fridge-hint">${s.wishlist.open_wishes} envie(s) encore à offrir sur ${s.wishlist.total_wishes}.</p>`;
     }
 
+    const showsBox = $("#home-shows");
+    if (s.shows.new_episodes.length === 0) {
+      showsBox.innerHTML = `<p class="muted">${s.shows.watching
+        ? "Tout est à jour sur ce qui est en cours ✅"
+        : "Rien en cours — ajoutez une série ou un film dans l'onglet Séries."}</p>`;
+    } else {
+      showsBox.innerHTML = s.shows.new_episodes.map((sh) => `
+        <div class="home-item">
+          <div class="info">
+            <strong>🎬 ${sh.title}</strong>
+            <small>🆕 ${sh.unwatched_aired_episodes} épisode(s) à voir</small>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="goToShow(${sh.id})">Voir</button>
+        </div>`).join("");
+    }
+    const showsBadge = $("#shows-badge");
+    showsBadge.textContent = s.shows.new_episodes_count;
+    showsBadge.classList.toggle("hidden", s.shows.new_episodes_count === 0);
+
     $("#home-stats").innerHTML = `
       <div class="stat"><div class="num">${s.plants.total}</div><div class="lbl">Plantes</div></div>
       <div class="stat"><div class="num">${s.plants.due_count}</div><div class="lbl">Arrosages dus</div></div>
@@ -141,8 +160,16 @@ async function loadHome() {
       <div class="stat"><div class="num">${s.grocery.items_on_list}</div><div class="lbl">Courses à faire</div></div>
       <div class="stat"><div class="num">${s.grocery.fridge_items}</div><div class="lbl">Dans le frigo</div></div>
       <div class="stat"><div class="num">${s.wishlist.open_wishes}</div><div class="lbl">Envies à offrir</div></div>
-      <div class="stat"><div class="num">${s.wishlist.people}</div><div class="lbl">Listes d'envies</div></div>`;
+      <div class="stat"><div class="num">${s.wishlist.people}</div><div class="lbl">Listes d'envies</div></div>
+      <div class="stat"><div class="num">${s.shows.watching}</div><div class="lbl">Séries en cours</div></div>
+      <div class="stat"><div class="num">${s.shows.total}</div><div class="lbl">Séries &amp; films suivis</div></div>`;
   } catch (e) { toast(e.message, true); }
+}
+
+function goToShow(id) {
+  document.querySelector('.tab[data-view="shows"]').click();
+  showsSetMode("library");
+  openShowModal(id);
 }
 
 /* ---------------- Plantes ---------------- */
@@ -1744,6 +1771,518 @@ async function stDeleteBox(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------------- Séries & films ---------------- */
+
+const SHOW_STATUS_LABELS = { a_voir: "À voir", en_cours: "En cours", termine: "Terminé", abandonne: "Abandonné" };
+const pad2 = (n) => String(n).padStart(2, "0");
+const showYear = (s) => (s.first_air_date || "").slice(0, 4);
+
+const showState = {
+  mode: "library",       // library | calendar | discover
+  items: [],
+  status: "",
+  mediaType: "",
+  calendar: [],
+  discoverResults: [],
+  discoverQuery: "",
+  discoverWindow: "week",
+  current: null,          // détail actuellement ouvert dans la modale
+  openSeasons: new Set(),
+  stats: null,
+};
+
+/* ---- Ma liste ---- */
+
+async function loadShowsLibrary() {
+  try {
+    const params = new URLSearchParams();
+    if (showState.status) params.set("status", showState.status);
+    if (showState.mediaType) params.set("media_type", showState.mediaType);
+    showState.items = await api.get("/api/shows?" + params.toString());
+    renderShowsLibrary();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderShowsLibrary() {
+  const grid = $("#shows-grid");
+  if (showState.items.length === 0) {
+    grid.innerHTML = `<p class="muted">Rien ici pour l'instant. Ajoutez une série ou un film depuis l'onglet « Découvrir » ✨</p>`;
+    return;
+  }
+  grid.innerHTML = showState.items.map(showCard).join("");
+}
+
+function showCard(s) {
+  const poster = s.poster_url
+    ? `<img class="show-poster" src="${s.poster_url}" alt="${stEsc(s.title)}" loading="lazy" />`
+    : `<div class="show-poster-fallback">${s.media_type === "movie" ? "🎞️" : "📺"}</div>`;
+  const newCount = s.unwatched_aired_episodes;
+
+  let nextLine = "";
+  if (s.media_type === "movie") {
+    nextLine = s.status === "termine" ? "✅ Vu" : "";
+  } else if (newCount) {
+    nextLine = `🆕 ${newCount} épisode${newCount > 1 ? "s" : ""} à voir`;
+  } else if (s.next_episode && s.next_episode.air_date) {
+    nextLine = `Prochain : S${pad2(s.next_episode.season_number)}E${pad2(s.next_episode.episode_number)} · ${stFmtDate(s.next_episode.air_date)}`;
+  } else if (s.is_ongoing) {
+    nextLine = "À jour ✅";
+  }
+
+  return `
+  <div class="card show-card" onclick="openShowModal(${s.id})">
+    <div class="show-poster-wrap">
+      ${poster}
+      <span class="show-type-badge">${s.media_type === "movie" ? "🎞️" : "📺"}</span>
+      ${newCount ? `<span class="show-new-badge">🆕 ${newCount}</span>` : ""}
+    </div>
+    <div class="show-body">
+      <span class="status-pill show-status-${s.status}">${SHOW_STATUS_LABELS[s.status]}</span>
+      <h3>${stEsc(s.title)}</h3>
+      <div class="show-meta">${showYear(s) || "—"}${s.rating ? " · " + "★".repeat(s.rating) : ""}</div>
+      ${nextLine ? `<div class="show-next">${nextLine}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+$("#shows-status-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  showState.status = chip.dataset.status;
+  document.querySelectorAll("#shows-status-chips .chip").forEach((c) => c.classList.toggle("active", c === chip));
+  loadShowsLibrary();
+});
+
+$("#shows-type-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  showState.mediaType = chip.dataset.type;
+  document.querySelectorAll("#shows-type-chips .chip").forEach((c) => c.classList.toggle("active", c === chip));
+  loadShowsLibrary();
+});
+
+/* ---- Mode (Ma liste / Calendrier / Découvrir) ---- */
+
+function showsSetMode(mode) {
+  showState.mode = mode;
+  document.querySelectorAll("#shows-mode .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  $("#shows-library-panel").classList.toggle("hidden", mode !== "library");
+  $("#shows-calendar-panel").classList.toggle("hidden", mode !== "calendar");
+  $("#shows-discover-panel").classList.toggle("hidden", mode !== "discover");
+  $("#shows-stats-panel").classList.toggle("hidden", mode !== "stats");
+  if (mode === "calendar" && showState.calendar.length === 0) loadShowsCalendar();
+  if (mode === "discover" && showState.discoverResults.length === 0) loadShowsDiscover();
+  if (mode === "stats") loadShowsStats();
+}
+
+$("#shows-mode").addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (btn) showsSetMode(btn.dataset.mode);
+});
+
+/* ---- Calendrier ---- */
+
+async function loadShowsCalendar() {
+  try {
+    showState.calendar = await api.get("/api/shows/calendar?days=30");
+    renderShowsCalendar();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderShowsCalendar() {
+  const box = $("#shows-calendar-list");
+  if (showState.calendar.length === 0) {
+    box.innerHTML = `<p class="muted">Aucun épisode prévu dans les 30 prochains jours.</p>`;
+    return;
+  }
+  const byDate = new Map();
+  for (const ep of showState.calendar) {
+    if (!byDate.has(ep.air_date)) byDate.set(ep.air_date, []);
+    byDate.get(ep.air_date).push(ep);
+  }
+  box.innerHTML = [...byDate.entries()].map(([airDate, eps]) => `
+    <div class="card" style="margin-bottom:.8rem">
+      <strong>${stFmtDate(airDate)}</strong>
+      <div class="home-list" style="margin-top:.6rem">
+        ${eps.map((ep) => `
+          <div class="home-item">
+            <div class="info">
+              <strong>🎬 ${stEsc(ep.title)}</strong>
+              <small>S${pad2(ep.season_number)}E${pad2(ep.episode_number)}${ep.name ? " · " + stEsc(ep.name) : ""}</small>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="openShowModal(${ep.show_id})">Voir</button>
+          </div>`).join("")}
+      </div>
+    </div>`).join("");
+}
+
+/* ---- Statistiques ---- */
+
+function monthLabelFr(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "short" });
+}
+
+async function loadShowsStats() {
+  try {
+    showState.stats = await api.get("/api/shows/stats");
+    renderShowsStats();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderShowsStats() {
+  const st = showState.stats;
+  const content = $("#shows-stats-content");
+  if (!st || st.totals.tracked === 0) {
+    content.innerHTML = `<p class="muted">Rien à analyser pour l'instant — ajoutez et regardez quelques séries ou films 🎬</p>`;
+    return;
+  }
+
+  const statusColors = { a_voir: "var(--muted)", en_cours: "var(--accent)", termine: "var(--owner-a)", abandonne: "var(--danger)" };
+  const statusTotal = Object.values(st.totals.by_status).reduce((a, b) => a + b, 0) || 1;
+  const statusBar = Object.entries(st.totals.by_status)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `<div class="stack-seg" style="width:${(v / statusTotal * 100).toFixed(1)}%;background:${statusColors[k]}"></div>`).join("");
+  const statusLegend = Object.entries(st.totals.by_status)
+    .map(([k, v]) => `<span><span class="dot" style="background:${statusColors[k]}"></span>${SHOW_STATUS_LABELS[k]} · ${v}</span>`).join("");
+
+  const genreMax = Math.max(1, ...st.genres.map((g) => g.count));
+  const genresHtml = st.genres.length
+    ? st.genres.map((g) => `
+      <div class="bar-row">
+        <span class="bar-label" title="${stEsc(g.genre)}">${stEsc(g.genre)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(g.count / genreMax * 100).toFixed(0)}%"></div></div>
+        <span class="bar-value">${g.count}</span>
+      </div>`).join("")
+    : `<p class="muted">Pas encore de genres connus — resynchronisez une série ou un film pour les récupérer.</p>`;
+
+  const monthMax = Math.max(1, ...st.monthly_activity.map((m) => m.minutes));
+  const monthHtml = st.monthly_activity.length
+    ? st.monthly_activity.map((m) => `
+      <div class="month-bar-wrap" title="${m.episodes} épisode(s) · ${m.movies} film(s) · ${(m.minutes / 60).toFixed(1)} h">
+        <div class="month-bar" style="height:${Math.max(3, Math.round(m.minutes / monthMax * 100))}%"></div>
+        <span class="month-label">${monthLabelFr(m.month)}</span>
+      </div>`).join("")
+    : `<p class="muted">Pas encore d'activité.</p>`;
+
+  const ratingMax = Math.max(1, ...[1, 2, 3, 4, 5].map((n) => st.ratings.distribution[String(n)]));
+  const ratingHtml = [5, 4, 3, 2, 1].map((n) => `
+    <div class="bar-row">
+      <span class="bar-label">${"★".repeat(n)}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${(st.ratings.distribution[String(n)] / ratingMax * 100).toFixed(0)}%;background:var(--warn)"></div></div>
+      <span class="bar-value">${st.ratings.distribution[String(n)]}</span>
+    </div>`).join("");
+
+  const topRatedHtml = st.ratings.top_rated.length
+    ? st.ratings.top_rated.map((s) => `
+      <div class="home-item">
+        <div class="info"><strong>${"★".repeat(s.rating)} ${stEsc(s.title)}</strong><small>${s.media_type === "movie" ? "Film" : "Série"}</small></div>
+        <button class="btn btn-ghost btn-sm" onclick="showsSetMode('library'); openShowModal(${s.id})">Voir</button>
+      </div>`).join("")
+    : `<p class="muted">Pas encore de note.</p>`;
+
+  content.innerHTML = `
+    <div class="stats" style="margin-bottom:1.3rem">
+      <div class="stat"><div class="num">${st.totals.tracked}</div><div class="lbl">Suivis</div></div>
+      <div class="stat"><div class="num">${st.totals.by_media_type.tv}</div><div class="lbl">Séries</div></div>
+      <div class="stat"><div class="num">${st.totals.by_media_type.movie}</div><div class="lbl">Films</div></div>
+      <div class="stat"><div class="num">${st.watch_time.episodes_watched}</div><div class="lbl">Épisodes vus</div></div>
+      <div class="stat"><div class="num">${st.watch_time.movies_watched}</div><div class="lbl">Films vus</div></div>
+      <div class="stat"><div class="num">${st.watch_time.total_hours}</div><div class="lbl">Heures visionnées${st.watch_time.estimated_entries ? " *" : ""}</div></div>
+      ${st.ratings.average ? `<div class="stat"><div class="num">${st.ratings.average}</div><div class="lbl">Note moyenne (nous)</div></div>` : ""}
+      ${st.tmdb_quality.average_vote ? `<div class="stat"><div class="num">${st.tmdb_quality.average_vote}</div><div class="lbl">Note TMDb moyenne</div></div>` : ""}
+    </div>
+    ${st.watch_time.estimated_entries ? `<p class="muted" style="margin:-0.9rem 0 1.2rem;font-size:.78rem">* Durée estimée pour ${st.watch_time.estimated_entries} élément(s) sans durée connue sur TMDb.</p>` : ""}
+
+    <div class="stats-section card">
+      <h3>Statuts</h3>
+      <div class="stack-bar">${statusBar}</div>
+      <div class="stack-legend">${statusLegend}</div>
+    </div>
+
+    <div class="stats-section card">
+      <h3>Genres</h3>
+      <div class="bar-list">${genresHtml}</div>
+    </div>
+
+    <div class="stats-section card">
+      <h3>Activité des 12 derniers mois</h3>
+      <div class="month-chart">${monthHtml}</div>
+    </div>
+
+    <div class="stats-grid-2">
+      <div class="stats-section card">
+        <h3>Notes données</h3>
+        <div class="bar-list">${ratingHtml}</div>
+      </div>
+      <div class="stats-section card">
+        <h3>Mieux notés</h3>
+        <div class="home-list">${topRatedHtml}</div>
+      </div>
+    </div>`;
+}
+
+/* ---- Découvrir (recherche + tendances TMDb) ---- */
+
+async function loadShowsDiscover() {
+  const grid = $("#shows-discover-grid");
+  try {
+    const cfg = await api.get("/api/shows/status");
+    if (!cfg.tmdb_configured) {
+      grid.innerHTML = `<p class="muted">Le suivi a besoin d'une clé <code>TMDB_API_KEY</code> dans <code>.env</code> pour chercher et découvrir des séries/films — voir <code>.env.example</code>.</p>`;
+      return;
+    }
+  } catch { /* on tente quand même la recherche */ }
+
+  try {
+    showState.discoverResults = showState.discoverQuery.trim()
+      ? await api.get("/api/shows/search?q=" + encodeURIComponent(showState.discoverQuery.trim()))
+      : await api.get(`/api/shows/trending?window=${showState.discoverWindow}`);
+    renderShowsDiscover();
+  } catch (e) {
+    grid.innerHTML = `<p class="muted">Rien à afficher pour l'instant.</p>`;
+    toast(e.message, true);
+  }
+}
+
+function renderShowsDiscover() {
+  const grid = $("#shows-discover-grid");
+  if (showState.discoverResults.length === 0) {
+    grid.innerHTML = `<p class="muted">Aucun résultat.</p>`;
+    return;
+  }
+  grid.innerHTML = showState.discoverResults.map(discoverCard).join("");
+}
+
+function discoverCard(r) {
+  const poster = r.poster_url
+    ? `<img class="show-poster" src="${r.poster_url}" alt="${stEsc(r.title)}" loading="lazy" />`
+    : `<div class="show-poster-fallback">${r.media_type === "movie" ? "🎞️" : "📺"}</div>`;
+  const year = (r.date || "").slice(0, 4);
+  return `
+  <div class="card show-card" style="cursor:default">
+    <div class="show-poster-wrap">
+      ${poster}
+      <span class="show-type-badge">${r.media_type === "movie" ? "🎞️" : "📺"}</span>
+      ${r.already_tracked
+        ? `<button class="btn btn-ghost btn-sm show-add-btn" disabled>✓ Suivi</button>`
+        : `<button class="btn btn-primary btn-sm show-add-btn" onclick="addShow(${r.tmdb_id}, '${r.media_type}', event)">+ Ajouter</button>`}
+    </div>
+    <div class="show-body">
+      <h3>${stEsc(r.title)}</h3>
+      <div class="show-meta">${year || "—"}</div>
+    </div>
+  </div>`;
+}
+
+async function addShow(tmdbId, mediaType, ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    await api.post("/api/shows", { tmdb_id: tmdbId, media_type: mediaType });
+    toast("Ajouté au suivi 🎬");
+    showState.discoverResults = showState.discoverResults.map((r) =>
+      r.tmdb_id === tmdbId && r.media_type === mediaType ? { ...r, already_tracked: true } : r);
+    renderShowsDiscover();
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+let showsSearchTimer = null;
+$("#shows-search-q").addEventListener("input", (e) => {
+  showState.discoverQuery = e.target.value;
+  clearTimeout(showsSearchTimer);
+  showsSearchTimer = setTimeout(loadShowsDiscover, 300);
+});
+
+$("#shows-window-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  showState.discoverWindow = chip.dataset.window;
+  document.querySelectorAll("#shows-window-chips .chip").forEach((c) => c.classList.toggle("active", c === chip));
+  if (!showState.discoverQuery.trim()) loadShowsDiscover();
+});
+
+/* ---- Modale détail ---- */
+
+async function openShowModal(id) {
+  try {
+    showState.current = await api.get(`/api/shows/${id}`);
+    const seasons = [...new Set(showState.current.episodes.map((e) => e.season_number))];
+    showState.openSeasons = new Set(seasons.length ? [Math.max(...seasons)] : []);
+    renderShowModal();
+    $("#show-modal").showModal();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function refreshShowFromServer(showId) {
+  showState.current = await api.get(`/api/shows/${showId}`);
+  renderShowModal();
+}
+
+function renderShowModal() {
+  const s = showState.current;
+  if (!s) return;
+  const backdrop = s.backdrop_url ? ` style="background-image:url('${s.backdrop_url}')"` : "";
+  const poster = s.poster_url
+    ? `<img class="show-hero-poster" src="${s.poster_url}" alt="" />`
+    : `<div class="show-hero-poster show-poster-fallback">${s.media_type === "movie" ? "🎞️" : "📺"}</div>`;
+
+  $("#show-modal-body").innerHTML = `
+    <div class="show-hero"${backdrop}>
+      <div class="show-hero-inner">
+        ${poster}
+        <div class="show-hero-titles">
+          <h2>${stEsc(s.title)}</h2>
+          <div class="show-meta">${s.media_type === "movie" ? "🎞️ Film" : "📺 Série"}${showYear(s) ? " · " + showYear(s) : ""}${s.tmdb_status ? " · " + stEsc(s.tmdb_status) : ""}</div>
+        </div>
+      </div>
+    </div>
+    <div class="show-modal-content">
+      <div class="show-controls">
+        <select onchange="changeShowStatus(${s.id}, this.value)">
+          ${Object.entries(SHOW_STATUS_LABELS).map(([v, l]) => `<option value="${v}" ${s.status === v ? "selected" : ""}>${l}</option>`).join("")}
+        </select>
+        <div class="show-rate">
+          <span class="show-rate-label">Note :</span>
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="${s.rating >= n ? "filled" : ""}" onclick="rateShow(${s.id}, ${n})" title="${n} étoile(s)">★</button>`).join("")}
+        </div>
+        ${s.rating ? `<button type="button" class="btn btn-ghost btn-sm" onclick="rateShow(${s.id}, null)">Effacer la note</button>` : ""}
+        <button type="button" class="btn btn-ghost btn-sm" onclick="refreshShow(${s.id})">🔄 Resynchroniser</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="deleteShow(${s.id})">🗑️ Retirer</button>
+      </div>
+      ${s.overview ? `<p class="show-overview">${stEsc(s.overview)}</p>` : ""}
+      <textarea class="show-notes" rows="2" placeholder="Notes perso…"
+                onchange="saveShowNotes(${s.id}, this.value)">${stEsc(s.notes || "")}</textarea>
+      ${s.media_type === "movie" ? renderMovieWatch(s) : renderSeasons(s)}
+    </div>`;
+}
+
+function renderMovieWatch(s) {
+  const watched = Boolean(s.watched_at);
+  return `
+    <div class="show-movie-watch">
+      <div>${watched ? `✅ Vu le ${stFmtDate(s.watched_at)}` : "Pas encore vu"}</div>
+      <button type="button" class="btn ${watched ? "btn-ghost" : "btn-primary"} btn-sm" onclick="toggleMovieWatched(${s.id}, ${!watched})">
+        ${watched ? "Marquer non vu" : "✅ Marquer vu"}
+      </button>
+    </div>`;
+}
+
+function renderSeasons(s) {
+  const bySeason = new Map();
+  for (const ep of s.episodes) {
+    if (!bySeason.has(ep.season_number)) bySeason.set(ep.season_number, []);
+    bySeason.get(ep.season_number).push(ep);
+  }
+  if (bySeason.size === 0) return `<p class="muted">Aucun épisode connu pour l'instant — essayez « 🔄 Resynchroniser ».</p>`;
+  const seasons = [...bySeason.entries()].sort((a, b) => a[0] - b[0]);
+  return `<div class="show-seasons">${seasons.map(([num, eps]) => showSeasonBlock(s.id, num, eps)).join("")}</div>`;
+}
+
+function showSeasonBlock(showId, num, eps) {
+  const open = showState.openSeasons.has(num);
+  const watched = eps.filter((e) => e.watched_at).length;
+  const label = num === 0 ? "Spéciaux" : `Saison ${num}`;
+  return `
+    <div class="show-season">
+      <div class="show-season-head" onclick="toggleShowSeason(${num})">
+        <strong>${label}</strong>
+        <small>${watched}/${eps.length} vu(s)</small>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); markSeasonWatched(${showId}, ${num})">✅ Tout marquer</button>
+      </div>
+      ${open ? `<div class="show-episodes">${eps.map((e) => showEpisodeRow(showId, e)).join("")}</div>` : ""}
+    </div>`;
+}
+
+function showEpisodeRow(showId, e) {
+  const today = new Date().toISOString().slice(0, 10);
+  const future = e.air_date && e.air_date > today;
+  const watched = Boolean(e.watched_at);
+  return `
+    <label class="show-episode ${future && !watched ? "is-future" : ""}">
+      <input type="checkbox" ${watched ? "checked" : ""} ${future && !watched ? "disabled" : ""}
+             onchange="toggleEpisodeWatched(${showId}, ${e.id}, this.checked)" />
+      <div class="ep-main">
+        <div class="ep-title">S${pad2(e.season_number)}E${pad2(e.episode_number)}${e.name ? " · " + stEsc(e.name) : ""}</div>
+        <div class="ep-date">${e.air_date ? stFmtDate(e.air_date) : "Date inconnue"}${future ? " · à venir" : ""}</div>
+      </div>
+    </label>`;
+}
+
+function toggleShowSeason(num) {
+  if (showState.openSeasons.has(num)) showState.openSeasons.delete(num); else showState.openSeasons.add(num);
+  renderShowModal();
+}
+
+async function changeShowStatus(id, status) {
+  try {
+    await api.put(`/api/shows/${id}`, { status });
+    await refreshShowFromServer(id);
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rateShow(id, rating) {
+  try {
+    await api.put(`/api/shows/${id}`, { rating });
+    await refreshShowFromServer(id);
+    await loadShowsLibrary();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveShowNotes(id, notes) {
+  try {
+    await api.put(`/api/shows/${id}`, { notes });
+    toast("Notes enregistrées");
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleMovieWatched(id, watched) {
+  try {
+    await api.post(`/api/shows/${id}/watch`, { watched });
+    await refreshShowFromServer(id);
+    toast(watched ? "Film marqué vu ✅" : "Marqué non vu");
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleEpisodeWatched(showId, episodeId, watched) {
+  try {
+    await api.post(`/api/shows/${showId}/episodes/${episodeId}/watched`, { watched });
+    await refreshShowFromServer(showId);
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function markSeasonWatched(showId, seasonNumber) {
+  try {
+    await api.post(`/api/shows/${showId}/seasons/${seasonNumber}/watched`, {});
+    await refreshShowFromServer(showId);
+    toast("Saison marquée vue ✅");
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function refreshShow(id) {
+  try {
+    await api.post(`/api/shows/${id}/refresh`, {});
+    await refreshShowFromServer(id);
+    toast("Resynchronisé avec TMDb 🔄");
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteShow(id) {
+  const s = showState.current;
+  if (!confirm(`Retirer « ${s ? s.title : "ceci"} » du suivi ?`)) return;
+  try {
+    await api.del(`/api/shows/${id}`);
+    closeModal("#show-modal");
+    toast("Retiré du suivi");
+    await Promise.all([loadShowsLibrary(), loadHome()]);
+  } catch (e) { toast(e.message, true); }
+}
+
 /* ---------------- Aide « (i) » des cartes d'accueil ----------------
    Ce que chaque fonctionnalité sait faire depuis Telegram, avec un exemple.
    Le contenu est du HTML statique écrit ici — rien ne vient de l'utilisateur. */
@@ -1798,6 +2337,20 @@ const HOME_HELP = {
       ["bot", "🚪 Sorti : Lunettes kitesurf — carton 2 — Lea"],
     ],
   },
+
+  shows: {
+    title: "🎬 Depuis Telegram",
+    needsAI: false,
+    paragraphs: [
+      "<code>/series</code> — ce qui est en cours, les nouveaux épisodes à voir et le nombre de films en attente.",
+      "Chaque jour à <b>08:00</b>, le bot resynchronise les séries suivies avec TMDb et annonce les épisodes qui viennent de sortir et ne sont pas encore marqués vus — un seul message par épisode, jamais deux fois.",
+      "Ajouter une série/un film, marquer un épisode vu, noter et commenter se fait dans l'onglet Séries — ce n'est pas (encore) du langage naturel Telegram.",
+    ],
+    chat: [
+      ["vous", "/series"],
+      ["bot", "🎬 Séries en cours\n\n• The Bear 🆕 3 épisode(s) à voir\n• Severance\n   Prochain : S03E01 le 12/09\n\n🍿 2 film(s) à voir"],
+    ],
+  },
 };
 
 // Ce que le bot sait faire ici et maintenant — chargé une fois, au premier clic.
@@ -1850,7 +2403,7 @@ document.querySelectorAll(".info-btn").forEach((btn) =>
 /* ---------------- Init ---------------- */
 
 (async function init() {
-  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans(), loadGrocery(), loadFridge(), loadWishlist(), loadStorage()]);
+  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans(), loadGrocery(), loadFridge(), loadWishlist(), loadStorage(), loadShowsLibrary()]);
   checkNotifications();
   setInterval(() => { loadPlants(); loadHome(); checkNotifications(); }, 60_000);
 })();

@@ -41,15 +41,31 @@ local network. Current features:
    without anyone maintaining it. The search endpoint is accent- and
    case-insensitive and spans the item, its box and its owners — it is how
    "where is my X?" gets answered.
-6. **Telegram bot** — general-purpose notification channel. Daily **watering
-   reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`), the read-only
-   `/plantes`, `/envies`, `/cartons`, `/sortis` and `/ou` commands, and two
-   **plain-French write paths** running through an LLM (`app/nlu.py`):
-   **adding a wish** (« /envie un casque Sony vers 350.- pour Lea ») and
-   **updating the storage inventory** (« j'ai sorti le wetsuit du carton 2,
-   prêté à Tom »). Both **ask for whatever is missing or ambiguous** — who it
-   is for, the price, *which* pair of goggles — one question at a time.
-   Setup doc: `TELEGRAM_BOT.md`.
+6. **Show tracker ("Séries")** — what the household watches, is watching, and
+   what's next, backed by **TMDb** (search, trending, covers, synopsis,
+   episode-level air dates — `app/tmdb.py`). Tracking is **household-wide**
+   (one shared status per show/movie, like plants/storage — not per person
+   like the wishlist). A tracked TV show gets a full **episode checklist**
+   per season; a movie has a single watched/unwatched toggle. Each show
+   carries our own **status** (`a_voir` → `en_cours` → `termine`, or
+   `abandonne`), a **1-5 star rating** and free-text **notes** — TMDb never
+   sees any of that, it is read-only source data. The **Calendrier** tab
+   lists upcoming episodes of followed shows for the next 30 days; the
+   **Découvrir** tab surfaces TMDb's trending titles and search. Marking an
+   episode watched (or a whole season via « ✅ Tout marquer ») auto-promotes
+   a show from `a_voir` to `en_cours`, and auto-closes it to `termine` once
+   TMDb says it's over and every aired episode is watched.
+7. **Telegram bot** — general-purpose notification channel. Daily **watering
+   reminders** at 09:00 & 21:00 (server-local, `TELEGRAM_TZ`), a daily
+   **show sync + new-episode digest** at 08:00 (re-pulls followed shows from
+   TMDb, announces — once — any episode that just aired and isn't marked
+   watched yet), the read-only `/plantes`, `/envies`, `/cartons`, `/sortis`,
+   `/ou` and `/series` commands, and two **plain-French write paths**
+   running through an LLM (`app/nlu.py`): **adding a wish** (« /envie un
+   casque Sony vers 350.- pour Lea ») and **updating the storage inventory**
+   (« j'ai sorti le wetsuit du carton 2, prêté à Tom »). Both **ask for
+   whatever is missing or ambiguous** — who it is for, the price, *which*
+   pair of goggles — one question at a time. Setup doc: `TELEGRAM_BOT.md`.
 
 The architecture is deliberately **agent-first**: everything the UI can do is
 exposed through a plain REST/JSON API, so agents can read and write all data
@@ -58,6 +74,8 @@ without touching the frontend or the database directly.
 ## Stack
 
 - **Backend**: Python 3.10+, FastAPI, SQLite (stdlib `sqlite3`, no ORM)
+- **External data**: [TMDb](https://www.themoviedb.org/) (`app/tmdb.py`) for
+  the show tracker — search, trending, covers, synopsis, episode air dates
 - **Frontend**: vanilla HTML/CSS/JS in `static/` (no build step)
 - **Server**: uvicorn, bound to `0.0.0.0` so LAN devices can reach it
 - **Database**: single file `data/dashboard.db`, **committed to the repo** so a
@@ -101,11 +119,12 @@ app/
   vision.py          photo → plant, dish & wish identification
   nlu.py             free-text Telegram message → structured wish (+ follow-up answers)
   photos.py          shared photo upload/claim helpers (plants + dishes + wishes)
+  tmdb.py            TMDb client (search, trending, tv/movie/season details)
   database.py        SQLite connection + schema (init_db, additive migrations)
   telegram.py        generic Telegram module (send, commands, polling)
   bot.py             feature wiring (watering reminders, /plantes, /envies, /envie,
-                     /moi, /cartons, /ou, /sorti, /range, natural-language wish
-                     capture + storage updates) + APScheduler cron
+                     /moi, /cartons, /ou, /sorti, /range, /series, natural-language
+                     wish capture + storage updates) + APScheduler cron
   nlu.py             free-text Telegram message → structured wish / storage action
   routers/
     plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
@@ -114,9 +133,11 @@ app/
     wishlist.py      /api/wishlist* (people, items, /reserve → /bought → /received,
                      name resolution, Telegram account linking)
     storage.py       /api/storage* (boxes, items, search, /out → /in, /move, history)
+    shows.py         /api/shows* (search, trending, calendar, CRUD, episode/season
+                     watched, movie watched, refresh from TMDb)
 static/
-  index.html         SPA shell (6 views: Accueil / Plantes / Repas / Courses /
-                     Envies / Rangement)
+  index.html         SPA shell (7 views: Accueil / Plantes / Repas / Courses /
+                     Envies / Rangement / Séries)
                      Chaque carte d'accueil branchée au bot porte un « (i) »
                      qui explique ses commandes Telegram (HOME_HELP dans app.js)
   style.css          theme (dark botanical)
@@ -190,6 +211,22 @@ locally: `http://localhost:8000`.
 | Put it back | `POST /api/storage/items/{id}/in` body `{}` or `{"box_id": ...}` to land it elsewhere |
 | Move an item to another box | `POST /api/storage/items/{id}/move` body `{"box_id": 4}` (`null` → no box) |
 | An item's out/in history | `GET /api/storage/items/{id}/history` |
+| **Show tracker** — is TMDb reachable? | `GET /api/shows/status` → `{tmdb_configured}` |
+| Search TMDb (to add something) | `GET /api/shows/search?q=&media_type=` |
+| What's trending on TMDb | `GET /api/shows/trending?window=day\|week&media_type=all\|movie\|tv` |
+| Tracked shows/movies | `GET /api/shows?status=&media_type=` |
+| Add something to the tracker | `POST /api/shows` body `{"tmdb_id", "media_type", "status"?}` — 409 if already tracked |
+| Upcoming episodes (followed shows) | `GET /api/shows/calendar?days=30` |
+| Viewing stats (status/genre mix, watch time, monthly activity, ratings) | `GET /api/shows/stats` |
+| Get one tracked show/movie (+ episodes) | `GET /api/shows/{id}` |
+| Update status/rating/notes | `PUT /api/shows/{id}` body `{"status"?, "rating"?, "notes"?}` — only given fields change; `"rating": null` clears it |
+| Remove from the tracker | `DELETE /api/shows/{id}` |
+| Re-sync from TMDb now | `POST /api/shows/{id}/refresh?full=false` |
+| Mark a movie watched/unwatched | `POST /api/shows/{id}/watch` body `{"watched": true, "at"?}` — 400 on a TV show |
+| List a show's episodes | `GET /api/shows/{id}/episodes` |
+| Mark one episode watched/unwatched | `POST /api/shows/{id}/episodes/{episode_id}/watched` body `{"watched": true, "at"?}` |
+| Catch-up a whole season | `POST /api/shows/{id}/seasons/{season_number}/watched` |
+| Trigger the show sync + Telegram digest | `POST /api/bot/shows-check` (same logic as the 08:00 cron) |
 
 ### Conventions agents must know
 
@@ -289,6 +326,46 @@ locally: `http://localhost:8000`.
   case-insensitively, across the item, its box and its owners. A query that is
   just a box code — `2`, `carton 2`, `#7` — returns that box's contents
   instead of every name containing that digit.
+- **Stats are computed locally, from `genres`/`runtime_minutes`/`vote_average`**
+  (`GET /api/shows/stats`) — plain TMDb fields synced onto `shows`/
+  `show_episodes` by `refresh_show()`. A show added before these columns
+  existed, or never resynced since, has them empty until its next sync —
+  `stats.watch_time.estimated_entries` counts how many watched entries fell
+  back to a flat runtime estimate (`EPISODE_RUNTIME_FALLBACK_MIN` /
+  `MOVIE_RUNTIME_FALLBACK_MIN`) because TMDb had no runtime for them.
+- **Show tracker is TMDb-keyed, not locally owned**: `shows.tmdb_id` +
+  `media_type` (`tv`/`movie`) is the unique key (`UNIQUE (tmdb_id,
+  media_type)` — 409 on a duplicate add). Title, overview, poster/backdrop
+  paths, TMDb's own status and the cached "next episode to air" are all
+  **synced copies**, refreshed by `refresh_show()` — never hand-edit them.
+  Only `status`, `rating` and `notes` are ours; `PUT /api/shows/{id}` only
+  ever touches those three.
+- **`refresh_show()` is selective, not a full re-pull**: it always refetches
+  the show's own TMDb details (cheap), but only refetches episode lists for
+  seasons not seen yet **plus** the current highest-numbered season — where
+  new episodes actually appear. `POST .../refresh?full=true` forces every
+  season, used once when a show is first added.
+- **Episode watched-state drives the tracking status, in both directions**:
+  marking an episode (or a whole season, `POST .../seasons/{n}/watched`)
+  watched promotes a show from `a_voir` to `en_cours` automatically, and —
+  once TMDb says the show is `Ended`/`Canceled` and every aired episode is
+  watched — closes it to `termine` (`_maybe_autocomplete`). The reverse also
+  happens: if TMDb later renews a `termine` show, or a sync pulls in an
+  episode that isn't watched yet, it reopens to `en_cours`
+  (`_maybe_reopen`) — otherwise a finished show would go stale forever the
+  moment it got renewed. Nobody has to remember to flip the status by hand
+  either way.
+- **The daily sync covers every non-abandoned show, `termine` included**
+  (`bot.sync_and_notify_shows` excludes only `abandonne`) — it has to, since
+  `_maybe_reopen` (above) only fires *during* a sync. Only `abandonne` truly
+  stops the bot from ever looking at a show again.
+- **A Telegram "new episode" announcement fires exactly once per episode**:
+  `show_episodes.notified_at` is set right after `telegram.send_message()`
+  succeeds (never on failure, so a network hiccup retries next day), and the
+  daily digest (08:00) only considers episodes with `air_date <= today AND
+  watched_at IS NULL AND notified_at IS NULL` on a show with status
+  `a_voir`/`en_cours` — reached by a `termine` show only via `_maybe_reopen`
+  firing first, earlier in the same sync.
 - **Telegram bot**: a generic module (`app/telegram.py`) + feature wiring
   (`app/bot.py`). Features register cron jobs with `bot.add_cron_job(func,
   hour, minute)` (daily, server-local time or `TELEGRAM_TZ`) and commands with
@@ -296,7 +373,7 @@ locally: `http://localhost:8000`.
   app process, so it starts/stops with the container. Commands so far:
   `/plantes`, `/envies [prénom]`, `/envie <texte>`, `/moi <prénom>`,
   `/cartons [recherche]`, `/ou <objet>`, `/sortis`, `/sorti <texte>`,
-  `/range <texte>`, `/help`. Setup: `TELEGRAM_BOT.md`.
+  `/range <texte>`, `/series`, `/help`. Setup: `TELEGRAM_BOT.md`.
 - **Several text handlers can coexist**: `telegram.register_text_handler()`
   appends, and handlers are tried in registration order until one returns a
   reply — so each must return `None` for anything that is not its business.
