@@ -87,6 +87,7 @@ function showView(view) {
   });
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   window.scrollTo(0, 0);
+  if (view === "housing" && hsBooted) hsOnShow(); // la carte ne se dessine qu'une fois visible
 }
 
 document.querySelectorAll(".tab").forEach((tab) =>
@@ -122,6 +123,9 @@ function renderHello(s) {
       : `l'anniversaire de ${esc(bday.name)} arrive dans ${n(bday.days_until_birthday, "jour", "jours")}`);
   }
   if (s.shows.new_episodes_count) bits.push(`${n(s.shows.new_episodes_count, "épisode", "épisodes")} à rattraper`);
+  if (s.housing && s.housing.new_count) {
+    bits.push(n(s.housing.new_count, "nouvelle annonce d'appart à regarder", "nouvelles annonces d'appart à regarder"));
+  }
   const sentence = bits.length > 1 ? bits.slice(0, -1).join(", ") + " et " + bits[bits.length - 1] : bits[0];
 
   el.innerHTML = `
@@ -134,6 +138,8 @@ async function loadHome() {
   try {
     const s = await api.get("/api/summary");
     renderHello(s);
+    hsSkewFrom(s.generated_at);
+    hsRenderHomeCard(s.housing);
 
     const dueBox = $("#home-due-plants");
     if (s.plants.due.length === 0) {
@@ -213,7 +219,9 @@ async function loadHome() {
       <div class="stat"><div class="num">${s.wishlist.open_wishes}</div><div class="lbl">Envies à offrir</div></div>
       <div class="stat"><div class="num">${s.wishlist.people}</div><div class="lbl">Listes d'envies</div></div>
       <div class="stat"><div class="num">${s.shows.watching}</div><div class="lbl">Séries en cours</div></div>
-      <div class="stat"><div class="num">${s.shows.total}</div><div class="lbl">Séries &amp; films suivis</div></div>`;
+      <div class="stat"><div class="num">${s.shows.total}</div><div class="lbl">Séries &amp; films suivis</div></div>
+      <div class="stat"><div class="num">${s.housing.new_count}</div><div class="lbl">Annonces d'appart à voir</div></div>
+      <div class="stat"><div class="num">${s.housing.favorites}</div><div class="lbl">Apparts en favori</div></div>`;
   } catch (e) { toast(e.message, true); }
 }
 
@@ -2336,6 +2344,1135 @@ async function deleteShow(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------------- Logement : recherche d'appartement ----------------
+   Les recherches enregistrées tournent côté serveur (à la demande ou toutes
+   seules) ; ici on les règle, on suit leurs vérifications en direct, et on
+   trie les annonces sur une liste et une carte. L'état d'une annonce (vue,
+   favori, pas pour nous) est partagé par toute la maison. */
+
+var hsBooted = false; // `var` : showView() le lit avant que cette section ne soit évaluée
+
+const HS_VIEWS = [["new", "Nouvelles"], ["active", "Toutes"], ["favorites", "⭐ Favoris"], ["dismissed", "✕ Écartées"]];
+const HS_ROOMS = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7, 8];
+const HS_TAG_ZOOM = 14;  // à partir de ce zoom, les épingles affichent le loyer
+const HS_PAGE = 60;      // annonces affichées d'un coup dans la liste (la carte les montre toutes)
+const HS_SWITZERLAND = [[45.82, 5.96], [47.81, 10.49]];
+
+const hsState = {
+  meta: { sources: [], categories: [], features: [], running: [] },
+  searches: [],
+  listings: [],
+  counts: { active: 0, new: 0, favorites: 0, dismissed: 0 },
+  scope: "",            // "" = toutes les recherches, sinon l'id (texte) d'une recherche
+  view: "active",       // active | new | favorites | dismissed
+  sort: "recent",
+  q: "",
+  pane: "list",         // téléphone : list | map
+  hoverId: null,
+  detail: null,         // annonce ouverte dans la modale
+  skew: 0,              // horloge du serveur (UTC en Docker) → horloge du navigateur
+  map: null, pins: null, zones: null, markers: new Map(), tagMode: null,
+  fitPending: true,     // recadrer la carte au prochain rendu
+  limit: HS_PAGE,       // annonces déjà déroulées dans la liste
+  polls: new Map(),     // run_id → search_id des vérifications suivies en direct
+  lastRuns: new Map(),  // search_id → id du dernier passage vu
+  draft: { zones: [] }, // recherche en cours d'édition
+  pasted: {},           // ce que l'IA a lu en plus (charges, dispo, équipements, texte)
+};
+
+/* ---- Petits outils ---- */
+
+const hsChf = (n) => (n == null ? "?" : String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "'"));
+const hsPrice = (l) => (l.price ? `${hsChf(l.price)}.–` : "Prix ?");
+const hsListing = (id) => hsState.listings.find((l) => l.id === id);
+const hsShortLabel = (label) => String(label || "").replace(" · ImmoScout24", "");
+
+function hsSkewFrom(serverNow) {
+  if (serverNow) hsState.skew = Date.now() - Date.parse(serverNow);
+}
+// Les dates du serveur sont « locales au serveur » : on les recale sur l'horloge du navigateur.
+const hsTime = (iso) => Date.parse(iso) + (hsState.skew || 0);
+
+function hsAgo(iso) {
+  if (!iso) return "";
+  const min = Math.round((Date.now() - hsTime(iso)) / 60000);
+  if (min < 1) return "à l'instant";
+  if (min < 60) return `il y a ${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const days = Math.round(h / 24);
+  if (days === 1) return "hier";
+  if (days < 7) return `il y a ${days} jours`;
+  return "le " + new Date(hsTime(iso)).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+function hsWhen(iso) {
+  const d = new Date(hsTime(iso));
+  return `le ${d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} à ${
+    d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function hsInterval(min) {
+  if (min < 60) return `${min} min`;
+  return min === 60 ? "heures" : `${min / 60} heures`;
+}
+
+function hsFacts(l) {
+  return [
+    l.rooms != null && `${l.rooms} pièce${l.rooms > 1 ? "s" : ""}`,
+    l.surface && `${l.surface} m²`,
+    l.price_per_m2 && `${Math.round(l.price_per_m2)}.– le m²`,
+  ].filter(Boolean);
+}
+
+function hsPlace(l) {
+  const town = l.zipcode && l.city ? `${l.zipcode} ${l.city}` : (l.city || l.zipcode || "");
+  return [l.street, town].filter(Boolean).join(", ");
+}
+
+// Une photo qui ne charge plus (annonce retirée, site qui bloque) laisse place à un pictogramme.
+function hsImgFail(img) {
+  const span = document.createElement("span");
+  span.className = img.className;
+  span.textContent = "🏢";
+  img.replaceWith(span);
+}
+
+function hsSetBadge(n) {
+  const badge = $("#housing-badge");
+  badge.textContent = n;
+  badge.classList.toggle("hidden", !n);
+}
+
+/* ---- Chargement ---- */
+
+async function hsBoot() {
+  try {
+    hsState.meta = await api.get("/api/housing/status");
+    hsSkewFrom(hsState.meta.now);
+  } catch (e) { /* le reste de la page marche sans : on réessaiera au prochain chargement */ }
+  try {
+    hsState.view = localStorage.getItem("hsView") || "active";
+    hsState.sort = localStorage.getItem("hsSort") || "recent";
+  } catch { /* stockage indisponible : valeurs par défaut */ }
+  if (!HS_VIEWS.some(([k]) => k === hsState.view)) hsState.view = "active";
+  $("#hs-sort").value = hsState.sort;
+  await hsLoad();
+  for (const run of hsState.meta.running || []) if (run) hsWatch(run.id, run.search_id);
+  hsBooted = true;
+  if ($("#view-housing").classList.contains("active")) hsOnShow();
+}
+
+async function hsLoad() {
+  await Promise.all([hsLoadSearches(), hsLoadListings()]);
+}
+
+/** Recharge les fiches de recherche. → true si un passage a eu lieu depuis la dernière fois. */
+async function hsLoadSearches() {
+  try {
+    hsState.searches = await api.get("/api/housing/searches");
+  } catch (e) { toast(e.message, true); return false; }
+  if (hsState.scope && !hsState.searches.some((s) => String(s.id) === hsState.scope)) hsState.scope = "";
+  let changed = false;
+  for (const s of hsState.searches) {
+    const runId = s.last_run ? s.last_run.id : null;
+    if (hsState.lastRuns.has(s.id) && hsState.lastRuns.get(s.id) !== runId) changed = true;
+    hsState.lastRuns.set(s.id, runId);
+    if (s.running && runId && !hsState.polls.has(runId)) hsWatch(runId, s.id);
+  }
+  hsRenderSearches();
+  hsRenderToolbar();
+  hsRenderZones();
+  return changed;
+}
+
+async function hsLoadListings() {
+  const params = new URLSearchParams({ view: hsState.view, sort: hsState.sort });
+  if (hsState.scope) params.set("search_id", hsState.scope);
+  try {
+    const res = await api.get("/api/housing/listings?" + params.toString());
+    hsSkewFrom(res.now);
+    hsState.listings = res.items;
+    hsState.counts = res.counts;
+  } catch (e) { toast(e.message, true); return; }
+  hsRenderToolbar();
+  hsRenderList();
+  hsRenderMap();
+}
+
+/* ---- Fiches de recherche ---- */
+
+function hsRenderSearches() {
+  const box = $("#hs-searches");
+  if (!hsState.searches.length) {
+    box.innerHTML = `
+      <div class="hs-welcome">
+        <h3>Votre première recherche</h3>
+        <p>Dites où chercher, le loyer et le nombre de pièces. Le robot lit Flatfox, Homegate, ImmoScout24 et
+           immobilier.ch, place les annonces sur la carte et vous prévient quand il en voit une nouvelle.</p>
+        <button class="btn btn-primary" onclick="hsOpenSearchModal()">+ Créer une recherche</button>
+      </div>`;
+    return;
+  }
+  box.innerHTML = hsState.searches.map(hsSearchCard).join("") +
+    `<button class="hs-search-add" onclick="hsOpenSearchModal()">+ Nouvelle recherche</button>`;
+}
+
+function hsRunSources(run) {
+  const mark = { pending: "…", running: "⏳", done: "✓", error: "✕" };
+  return `<div class="hs-run-sources">${Object.values(run.sources || {}).map((s) => `
+    <span class="${s.state === "error" ? "is-error" : ""}" title="${esc(s.error || "")}">${esc(hsShortLabel(s.label))} ${
+      mark[s.state] || ""}${s.state === "running" || s.state === "done" ? " " + s.found : ""}</span>`).join("")}</div>`;
+}
+
+function hsSearchCard(s) {
+  const active = hsState.scope === String(s.id);
+  const run = s.last_run;
+  let status;
+  if (s.running && run) {
+    status = hsRunSources(run) + `<div class="hs-progress" role="progressbar" aria-label="Vérification en cours"></div>`;
+  } else {
+    const bits = [];
+    if (run && run.finished_at) {
+      const failed = Object.values(run.sources || {}).filter((x) => x.state === "error");
+      bits.push(run.status === "error"
+        ? `<span class="is-error" title="${esc(run.error || "")}">Échec ${hsAgo(run.finished_at)}</span>`
+        : `<span title="${esc((run.warnings || []).join("\n"))}">Vérifiée ${hsAgo(run.finished_at)}</span>`);
+      failed.forEach((x) => bits.push(`<span class="is-error" title="${esc(x.error || "")}">${esc(hsShortLabel(x.label))} n'a pas répondu</span>`));
+    } else {
+      bits.push("<span>Pas encore vérifiée</span>");
+    }
+    bits.push(s.auto_run ? `<span>⏱ toutes les ${hsInterval(s.interval_minutes)}</span>` : "<span>Vérification à la main</span>");
+    status = `<div class="hs-search-meta">${bits.join("")}</div>`;
+  }
+  const n = s.counts.total;
+  return `
+    <div class="hs-search ${active ? "is-active" : ""}" tabindex="0" ${active ? 'aria-current="true"' : ""}
+         title="${active ? "Afficher toutes les recherches" : "N'afficher que cette recherche"}"
+         onclick="hsSetScope('${s.id}')" onkeydown="if (event.key === 'Enter' && event.target === this) hsSetScope('${s.id}')">
+      ${s.counts.new ? `<span class="hs-new-count">${s.counts.new} nouvelle${s.counts.new > 1 ? "s" : ""}</span>` : ""}
+      <h3>${esc(s.name)}</h3>
+      <div class="hs-summary">${esc(s.summary)}</div>
+      <div class="hs-summary">${n} annonce${n > 1 ? "s" : ""}${s.counts.favorites ? ` · ⭐ ${s.counts.favorites}` : ""}</div>
+      ${status}
+      <div class="hs-search-actions" onclick="event.stopPropagation()">
+        <button class="btn btn-primary btn-sm" onclick="hsRun(${s.id})" ${s.running ? "disabled" : ""}>${
+          s.running ? "Vérification…" : "Vérifier maintenant"}</button>
+        <button class="btn btn-ghost btn-sm btn-icon" onclick="hsOpenSearchModal(${s.id})" title="Modifier la recherche" aria-label="Modifier la recherche">✏️</button>
+      </div>
+    </div>`;
+}
+
+function hsSetScope(id) {
+  hsState.scope = hsState.scope === String(id) ? "" : String(id); // un second clic montre tout
+  hsState.fitPending = true;
+  hsResetList();
+  hsRenderSearches();
+  hsRenderZones();
+  hsLoadListings();
+}
+
+/* ---- Barre d'outils ---- */
+
+function hsRenderToolbar() {
+  const c = hsState.counts;
+  // Rien à filtrer tant qu'aucune recherche n'a rien trouvé.
+  $(".hs-toolbar").classList.toggle("hidden", !hsState.searches.length && !c.active && !c.dismissed && !c.favorites);
+  const scope = $("#hs-scope");
+  scope.classList.toggle("hidden", hsState.searches.length < 2);
+  scope.innerHTML = `<option value="">Toutes les recherches</option>` +
+    hsState.searches.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  scope.value = hsState.scope;
+  $("#hs-views").innerHTML = HS_VIEWS.map(([key, label]) => `
+    <button class="chip ${hsState.view === key ? "active" : ""}" role="tab" aria-selected="${hsState.view === key}"
+            data-hsview="${key}">${label}<span class="chip-count">${hsState.counts[key] ?? 0}</span></button>`).join("");
+}
+
+$("#hs-scope").addEventListener("change", (e) => hsSetScope(e.target.value || hsState.scope));
+
+$("#hs-views").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  hsState.view = chip.dataset.hsview;
+  try { localStorage.setItem("hsView", hsState.view); } catch { /* préférence non mémorisée */ }
+  hsResetList();
+  hsLoadListings();
+});
+
+$("#hs-sort").addEventListener("change", (e) => {
+  hsState.sort = e.target.value;
+  try { localStorage.setItem("hsSort", hsState.sort); } catch { /* préférence non mémorisée */ }
+  hsResetList();
+  hsLoadListings();
+});
+
+let hsFilterTimer = null;
+$("#hs-filter").addEventListener("input", (e) => {
+  hsState.q = e.target.value;
+  clearTimeout(hsFilterTimer);
+  hsFilterTimer = setTimeout(() => { hsResetList(); hsRenderList(); hsRenderMap(); }, 120);
+});
+
+$("#hs-pane-switch").addEventListener("click", (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  hsState.pane = btn.dataset.pane;
+  document.querySelectorAll("#hs-pane-switch .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
+  $("#hs-split").dataset.pane = hsState.pane;
+  if (hsState.pane === "map") hsOnShow();
+});
+
+$("#hs-new-search-btn").addEventListener("click", () => hsOpenSearchModal());
+$("#hs-run-all-btn").addEventListener("click", () => hsRunAll());
+$("#hs-paste-btn").addEventListener("click", () => hsOpenPaste());
+
+/* ---- Liste ---- */
+
+function hsFiltered() {
+  const words = stNorm(hsState.q).split(/\s+/).filter(Boolean);
+  if (!words.length) return hsState.listings;
+  return hsState.listings.filter((l) => {
+    const hay = stNorm(`${l.title} ${l.city} ${l.street} ${l.zipcode} ${l.source_label} ${l.agency}`);
+    return words.every((w) => hay.includes(w));
+  });
+}
+
+function hsEmptyText() {
+  if (!hsState.searches.length && !hsState.listings.length) {
+    return "Créez une recherche : les annonces trouvées apparaîtront ici et sur la carte.";
+  }
+  if (hsState.q.trim()) return "Aucune annonce ne contient ces mots.";
+  const running = hsState.searches.some((s) => s.running && (!hsState.scope || String(s.id) === hsState.scope));
+  if (running && hsState.view !== "dismissed") return "Vérification en cours sur les sites : les annonces arrivent dans un instant.";
+  return {
+    new: "Rien de nouveau : toutes les annonces ont été vues.",
+    active: "Aucune annonce pour l'instant. Lancez une vérification.",
+    favorites: "Pas encore de favori. Touchez ☆ sur une annonce pour la garder sous la main.",
+    dismissed: "Aucune annonce écartée.",
+  }[hsState.view];
+}
+
+function hsRenderList() {
+  const box = $("#hs-list");
+  const items = hsFiltered();
+  if (!items.length) {
+    box.innerHTML = `<div class="hs-empty"><span class="big">${hsState.view === "new" ? "🎉" : "🏠"}</span>${hsEmptyText()}</div>`;
+    return;
+  }
+  const shown = items.slice(0, hsState.limit);
+  const rest = items.length - shown.length;
+  box.innerHTML = shown.map(hsItemHtml).join("") + (rest > 0 ? `
+    <div class="hs-more">
+      <button class="btn btn-ghost" onclick="hsMore()">Afficher ${Math.min(HS_PAGE, rest)} annonces de plus</button>
+      <p>Encore ${rest} sur la carte.</p>
+    </div>` : "");
+}
+
+function hsMore() {
+  hsState.limit += HS_PAGE;
+  hsRenderList();
+}
+
+/** Nouveau tri, nouvelle vue, nouvelle recherche : la liste repart du début. */
+function hsResetList() {
+  hsState.limit = HS_PAGE;
+}
+
+function hsItemHtml(l) {
+  const cls = ["hs-item", l.is_new && "is-new", l.favorite && "is-fav", l.dismissed && "is-dismissed",
+               hsState.hoverId === l.id && "is-hover"].filter(Boolean).join(" ");
+  const thumb = l.image_url
+    ? `<img class="hs-thumb" src="${esc(l.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="hsImgFail(this)" />`
+    : `<span class="hs-thumb">🏢</span>`;
+  const tags = l.sources.filter((s) => s.source !== "immoscout24")
+    .map((s) => `<span class="hs-src" style="--src:${s.color}">${esc(hsShortLabel(s.label))}</span>`);
+  if (l.price_change) {
+    tags.push(l.price_change < 0
+      ? `<span class="hs-drop">↓ ${hsChf(-l.price_change)}.– de baisse</span>`
+      : `<span class="hs-up">↑ ${hsChf(l.price_change)}.– de hausse</span>`);
+  }
+  if (l.to_check && l.to_check.length) tags.push(`<span class="hs-flag">À vérifier : ${esc(l.to_check.join(", "))}</span>`);
+  const facts = hsFacts(l);
+  return `
+    <article class="${cls}" data-id="${l.id}" tabindex="0" onclick="hsOpenListing(${l.id})"
+             onkeydown="if (event.key === 'Enter' && event.target === this) hsOpenListing(${l.id})"
+             onmouseenter="hsHover(${l.id}, true)" onmouseleave="hsHover(${l.id}, false)">
+      ${thumb}
+      <div class="hs-body">
+        <div class="hs-price-row">
+          <span class="hs-price">${hsPrice(l)}<small>/mois</small></span>
+          ${l.is_new ? `<span class="sr-only">Nouvelle annonce.</span>` : ""}
+        </div>
+        ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
+        <div class="hs-title">${esc(l.title || "Annonce")}</div>
+        <div class="hs-place">${esc(hsPlace(l))}${l.geo_precision !== "exact" ? " (position approximative)" : ""} — trouvée ${hsAgo(l.first_seen_at)}</div>
+        ${tags.length ? `<div class="hs-tags">${tags.join("")}</div>` : ""}
+      </div>
+      <div class="hs-item-actions" onclick="event.stopPropagation()">
+        <button class="icon-btn ${l.favorite ? "is-on" : ""}" aria-pressed="${l.favorite}" onclick="hsToggleFav(${l.id})"
+                title="${l.favorite ? "Retirer des favoris" : "Garder en favori"}">${l.favorite ? "⭐" : "☆"}</button>
+        <button class="icon-btn" onclick="hsToggleDismiss(${l.id})"
+                title="${l.dismissed ? "Remettre dans la liste" : "Pas pour nous"}">${l.dismissed ? "↩️" : "✕"}</button>
+        ${safeUrl(l.url) ? `<a class="icon-btn" href="${safeUrl(l.url)}" target="_blank" rel="noopener"
+             title="Ouvrir l'annonce sur ${esc(hsShortLabel(l.source_label))}" onclick="hsMarkSeen(${l.id})">↗</a>` : ""}
+      </div>
+    </article>`;
+}
+
+function hsRerenderItem(id) {
+  const l = hsListing(id);
+  if (!l) return;
+  const el = document.querySelector(`.hs-item[data-id="${id}"]`);
+  if (el) el.outerHTML = hsItemHtml(l);
+  hsRefreshMarker(l, id === hsState.hoverId);
+}
+
+/** Survol d'une annonce de la liste : son épingle (ou le groupe qui la cache) s'allume. */
+function hsHover(id, on) {
+  hsState.hoverId = on ? id : null;
+  const l = hsListing(id);
+  const marker = hsState.markers.get(id);
+  if (!l || !marker) return;
+  const shown = hsVisibleMarker(marker);
+  if (shown === marker) {
+    marker.setIcon(hsIcon(l, on));
+    marker.setZIndexOffset(on ? 2000 : hsZ(l));
+  } else if (shown && shown.getElement && shown.getElement()) {
+    shown.getElement().classList.toggle("is-hover", on);
+  }
+}
+
+function hsHoverFromMap(id, on) {
+  hsState.hoverId = on ? id : null;
+  const el = document.querySelector(`.hs-item[data-id="${id}"]`);
+  if (el) el.classList.toggle("is-hover", on);
+  const l = hsListing(id);
+  const marker = hsState.markers.get(id);
+  if (l && marker) marker.setIcon(hsIcon(l, on));
+}
+
+/* ---- Carte ---- */
+
+function hsOnShow() {
+  hsInitMap();
+  if (!hsState.map) return;
+  setTimeout(() => {
+    hsState.map.invalidateSize();
+    if (hsState.fitPending) hsFit();
+  }, 60);
+}
+
+function hsInitMap() {
+  if (hsState.map || typeof L === "undefined") return;
+  const el = $("#hs-map");
+  if (!el.offsetWidth) return; // carte cachée (onglet ou volet « Liste ») : on attend qu'elle soit visible
+  const map = L.map(el, { minZoom: 6, maxZoom: 19, zoomControl: true }).setView([46.8, 8.2], 8);
+  const swiss = (layer) => L.tileLayer(
+    `https://wmts.geo.admin.ch/1.0.0/${layer}/default/current/3857/{z}/{x}/{y}.jpeg`,
+    { maxNativeZoom: 18, maxZoom: 19,
+      attribution: '© <a href="https://www.swisstopo.admin.ch/fr/" target="_blank" rel="noopener">swisstopo</a>' });
+  const bases = {
+    "Carte grise": swiss("ch.swisstopo.pixelkarte-grau"),
+    "Carte en couleurs": swiss("ch.swisstopo.pixelkarte-farbe"),
+    "Photo aérienne": swiss("ch.swisstopo.swissimage"),
+    "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }),
+  };
+  let chosen = "Carte grise";
+  try { if (localStorage.getItem("hsBase") in bases) chosen = localStorage.getItem("hsBase"); } catch { /* défaut */ }
+  bases[chosen].addTo(map);
+  L.control.layers(bases, null, { position: "topright" }).addTo(map);
+  map.on("baselayerchange", (e) => { try { localStorage.setItem("hsBase", e.name); } catch { /* défaut */ } });
+  map.on("zoomend", hsRefreshIcons);
+  hsState.zones = L.layerGroup().addTo(map);
+  // Deux cents annonces dans une ville se recouvrent : on les regroupe jusqu'au zoom de quartier.
+  hsState.pins = (L.markerClusterGroup
+    ? L.markerClusterGroup({
+        maxClusterRadius: 44, disableClusteringAtZoom: 16, showCoverageOnHover: false,
+        spiderLegPolylineOptions: { weight: 1.5, color: "#4d5872", opacity: 0.6 },
+        iconCreateFunction: hsClusterIcon,
+      })
+    : L.layerGroup()).addTo(map);
+  hsState.map = map;
+  hsState.tagMode = map.getZoom() >= HS_TAG_ZOOM;
+  hsFitBounds(L.latLngBounds(HS_SWITZERLAND), 9);
+  hsRenderZones();
+  hsRenderMap();
+}
+
+/** Bulle d'un groupe d'annonces : le nombre à la main, surligné s'il y en a de nouvelles. */
+function hsClusterIcon(cluster) {
+  const children = cluster.getAllChildMarkers();
+  const fresh = children.filter((m) => m.options.hsNew).length;
+  const fav = children.some((m) => m.options.hsFav);
+  const n = children.length;
+  const size = n < 10 ? 34 : n < 50 ? 40 : 48;
+  const title = `${n} annonces${fresh ? `, dont ${fresh} nouvelle${fresh > 1 ? "s" : ""}` : ""}`;
+  return L.divIcon({
+    className: "hs-cluster-wrap",
+    html: `<span class="hs-cluster ${fresh ? "is-new" : ""}" title="${title}">${n}${fav ? "<i>★</i>" : ""}</span>`,
+    iconSize: [size, size],
+  });
+}
+
+/** Le marqueur visible pour une annonce : elle-même, ou le groupe qui la contient. */
+function hsVisibleMarker(marker) {
+  return hsState.pins && hsState.pins.getVisibleParent ? hsState.pins.getVisibleParent(marker) : marker;
+}
+
+const hsZ = (l) => (l.favorite ? 600 : l.is_new ? 400 : 0);
+
+function hsIcon(l, hover = false) {
+  const tag = hsState.map && hsState.map.getZoom() >= HS_TAG_ZOOM;
+  const cls = [l.is_new && "is-new", l.favorite && "is-fav", l.geo_precision !== "exact" && "is-approx",
+               hover && "is-hover"].filter(Boolean).join(" ");
+  const html = tag
+    ? `<span class="hs-tag ${cls}">${l.price ? hsChf(l.price) : "?"}</span>`
+    : `<span class="hs-pin ${cls}">${l.favorite ? "★" : ""}</span>`;
+  return L.divIcon({ className: "hs-marker", html, iconSize: [0, 0] });
+}
+
+function hsPopup(l) {
+  const facts = hsFacts(l);
+  return `
+    <div class="hs-pop">
+      ${l.image_url ? `<img src="${esc(l.image_url)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+      <div class="hs-pop-body">
+        <span class="hs-price">${hsPrice(l)}<small>/mois</small></span>
+        ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
+        <div class="hs-place">${esc(hsPlace(l))}${l.geo_precision !== "exact" ? "<br>Position approximative (centre du NPA)" : ""}</div>
+        <button class="btn btn-primary btn-sm" onclick="hsOpenListing(${l.id})">Voir l'annonce</button>
+      </div>
+    </div>`;
+}
+
+function hsRenderMap() {
+  if (!hsState.map) return;
+  hsState.pins.clearLayers();
+  hsState.markers.clear();
+  const markers = [];
+  for (const l of hsFiltered()) {
+    if (l.lat == null || l.lng == null) continue;
+    const marker = L.marker([l.lat, l.lng], {
+      icon: hsIcon(l, l.id === hsState.hoverId), zIndexOffset: hsZ(l), keyboard: false,
+      title: `${hsPrice(l)} — ${l.title || ""}`, hsNew: l.is_new, hsFav: l.favorite,
+    });
+    marker.bindPopup(() => hsPopup(hsListing(l.id) || l),
+                     { className: "hs-popup", minWidth: 250, maxWidth: 250, autoPanPadding: [30, 30] });
+    marker.on("mouseover", () => hsHoverFromMap(l.id, true));
+    marker.on("mouseout", () => hsHoverFromMap(l.id, false));
+    marker.on("popupopen", () => {
+      const el = document.querySelector(`.hs-item[data-id="${l.id}"]`);
+      if (el && el.offsetParent) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    markers.push(marker);
+    hsState.markers.set(l.id, marker);
+  }
+  if (hsState.pins.addLayers) hsState.pins.addLayers(markers);
+  else markers.forEach((m) => m.addTo(hsState.pins));
+  if (hsState.fitPending) hsFit();
+}
+
+/** Met à jour l'épingle d'une annonce (et le groupe qui la contient) après un changement d'état. */
+function hsRefreshMarker(l, hover = false) {
+  const marker = hsState.markers.get(l.id);
+  if (!marker) return;
+  marker.options.hsNew = l.is_new;
+  marker.options.hsFav = l.favorite;
+  marker.setIcon(hsIcon(l, hover));
+  marker.setZIndexOffset(hover ? 2000 : hsZ(l));
+  if (hsState.pins.refreshClusters) hsState.pins.refreshClusters(marker);
+}
+
+function hsRenderZones() {
+  if (!hsState.map) return;
+  hsState.zones.clearLayers();
+  const shown = hsState.scope ? hsState.searches.filter((s) => String(s.id) === hsState.scope) : hsState.searches;
+  for (const s of shown) {
+    for (const z of s.criteria.zones) {
+      if (z.type !== "radius" || z.lat == null) continue;
+      L.circle([z.lat, z.lng], {
+        radius: z.km * 1000, interactive: false, className: "hs-zone-circle",
+        color: "#4d5872", weight: 1.5, dashArray: "6 7", fillColor: "#2d4a8a", fillOpacity: 0.04,
+      }).addTo(hsState.zones);
+    }
+  }
+}
+
+function hsFit() {
+  if (!hsState.map) return;
+  const points = [...hsState.markers.values()].map((m) => m.getLatLng());
+  hsState.zones.eachLayer((c) => { const b = c.getBounds(); points.push(b.getNorthEast(), b.getSouthWest()); });
+  hsState.fitPending = false;
+  if (points.length) hsFitBounds(L.latLngBounds(points), 15);
+}
+
+/** Cadre la carte sur la partie visible à l'écran : en haut de page, la carte collante
+    dépasse sous le bord de la fenêtre, et un cadrage « plein cadre » y cacherait les épingles. */
+function hsFitBounds(bounds, maxZoom) {
+  const rect = $("#hs-map").getBoundingClientRect();
+  const hidden = Math.max(0, Math.min(rect.bottom - window.innerHeight, rect.height - 200));
+  hsState.map.fitBounds(bounds, { paddingTopLeft: [40, 40], paddingBottomRight: [40, 40 + hidden], maxZoom });
+}
+
+function hsRefreshIcons() {
+  const tag = hsState.map.getZoom() >= HS_TAG_ZOOM;
+  if (tag === hsState.tagMode) return;
+  hsState.tagMode = tag;
+  for (const [id, marker] of hsState.markers) {
+    const l = hsListing(id);
+    if (l) marker.setIcon(hsIcon(l, id === hsState.hoverId));
+  }
+}
+
+function hsShowOnMap(id) {
+  const l = (hsState.detail && hsState.detail.id === id) ? hsState.detail : hsListing(id);
+  closeModal("#hs-listing-modal");
+  if (!l || l.lat == null) return toast("Pas de position connue pour cette annonce", true);
+  if (hsState.pane !== "map" && window.matchMedia("(max-width: 760px)").matches) {
+    document.querySelector('#hs-pane-switch .seg-btn[data-pane="map"]').click();
+  }
+  hsOnShow();
+  setTimeout(() => {
+    if (!hsState.map) return;
+    const marker = hsState.markers.get(id);
+    if (marker && hsState.pins.zoomToShowLayer) {
+      hsState.pins.zoomToShowLayer(marker, () => marker.openPopup()); // sort l'annonce de son groupe
+    } else {
+      hsState.map.setView([l.lat, l.lng], Math.max(hsState.map.getZoom(), 16));
+      if (marker) marker.openPopup();
+    }
+  }, 120);
+}
+
+/* ---- Détail d'une annonce ---- */
+
+async function hsOpenListing(id) {
+  try {
+    const l = await api.get(`/api/housing/listings/${id}`);
+    hsRenderDetail(l);
+    const modal = $("#hs-listing-modal");
+    if (!modal.open) modal.showModal();
+    if (l.is_new) hsMarkSeen(l.id);
+  } catch (e) { toast(e.message, true); }
+}
+
+function hsRenderDetail(l) {
+  hsState.detail = l;
+  const images = (l.images && l.images.length) ? l.images : (l.image_url ? [l.image_url] : []);
+  const gallery = images.length
+    ? `<div class="hs-gallery">${images.map((src) =>
+        `<img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`
+    : `<div class="hs-gallery-empty">🏢</div>`;
+  const facts = hsFacts(l);
+  if (l.floor != null) facts.push(l.floor === 0 ? "Rez-de-chaussée" : `${l.floor}e étage`);
+  if (l.available_from === "immediately") facts.push("Libre tout de suite");
+  else if (l.available_from) facts.push(`Libre dès le ${new Date(l.available_from + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "long" })}`);
+  const featureLabels = Object.fromEntries((hsState.meta.features || []).map((f) => [f.key, f.label]));
+  const chips = l.features.map((f) => `<span class="hs-chip">${esc(featureLabels[f] || f)}</span>`)
+    .concat((l.to_check || []).map((c) => `<span class="hs-chip is-check">À vérifier : ${esc(c)}</span>`));
+  const text = (l.description || "").trim();
+  const long = text.length > 650;
+  const links = l.sources.filter((s) => safeUrl(s.url)).map((s) =>
+    `<a class="btn btn-ghost btn-sm" style="--src:${s.color}" href="${safeUrl(s.url)}" target="_blank" rel="noopener"
+        onclick="hsMarkSeen(${l.id})">Ouvrir sur ${esc(s.label)}</a>`);
+  const history = l.price_history.map((h) =>
+    `<div>${hsWhen(h.at)} : ${hsChf(h.from)}.– devient ${hsChf(h.to)}.–</div>`).join("");
+  const found = l.searches.length ? ` par ${l.searches.map((s) => `« ${esc(s.name)} »`).join(", ")}` : "";
+  const charges = l.charges ? `dont ${hsChf(l.charges)}.– de charges` : "";
+
+  $("#hs-listing-body").innerHTML = `
+    ${gallery}
+    <div class="hs-detail ${l.is_new ? "is-new" : ""}">
+      <span class="hs-price">${hsPrice(l)}<small>/mois${charges ? ", " + charges : ""}</small></span>
+      <h2>${esc(l.title || "Annonce")}</h2>
+      ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
+      <div class="hs-place" style="margin-top:.35rem">📍 ${esc(hsPlace(l) || "Adresse inconnue")}${
+        l.geo_precision !== "exact" ? " (position approximative)" : ""}</div>
+      <div class="hs-detail-actions">
+        <button class="btn btn-ghost btn-sm ${l.favorite ? "is-on" : ""}" onclick="hsToggleFav(${l.id})">${
+          l.favorite ? "⭐ Favori" : "☆ Garder en favori"}</button>
+        <button class="btn btn-ghost btn-sm ${l.dismissed ? "is-on" : ""}" onclick="hsToggleDismiss(${l.id})">${
+          l.dismissed ? "↩️ Remettre dans la liste" : "✕ Pas pour nous"}</button>
+        ${l.lat != null ? `<button class="btn btn-ghost btn-sm" onclick="hsShowOnMap(${l.id})">📍 Voir sur la carte</button>` : ""}
+        ${!l.is_new && !l.dismissed ? `<button class="btn btn-ghost btn-sm" onclick="hsMarkUnseen(${l.id})">Marquer comme nouvelle</button>` : ""}
+        ${l.source === "manual" ? `<button class="btn btn-ghost btn-sm" onclick="hsDeleteManual(${l.id})">🗑️ Supprimer</button>` : ""}
+      </div>
+      ${chips.length ? `<div class="hs-chips">${chips.join("")}</div>` : ""}
+      ${text ? `<div class="hs-desc ${long ? "is-clamped" : ""}" id="hs-desc">${esc(text)}</div>
+        ${long ? `<button class="btn btn-ghost btn-sm" style="margin-top:.4rem" onclick="hsExpandDesc(this)">Lire la suite</button>` : ""}` : ""}
+      ${links.length ? `<div class="hs-links">${links.join("")}</div>` : ""}
+      <div class="hs-detail-meta">
+        <div>Trouvée ${hsWhen(l.first_seen_at)}${found}.</div>
+        ${l.agency ? `<div>Annonceur : ${esc(l.agency)}</div>` : ""}
+        ${history}
+      </div>
+    </div>`;
+  const body = $("#hs-listing-modal .hs-detail");
+  if (body) body.scrollTop = 0;
+}
+
+function hsExpandDesc(btn) {
+  $("#hs-desc").classList.remove("is-clamped");
+  btn.remove();
+}
+
+/* ---- Tri : vue, favori, pas pour nous ---- */
+
+async function hsUpdateListing(id, change, message) {
+  try {
+    const updated = await api.put(`/api/housing/listings/${id}`, change);
+    const local = hsListing(id);
+    if (local) Object.assign(local, { favorite: updated.favorite, dismissed: updated.dismissed,
+                                      is_new: updated.is_new, seen_at: updated.seen_at });
+    if ($("#hs-listing-modal").open && hsState.detail && hsState.detail.id === updated.id) hsRenderDetail(updated);
+    if (message) toast(message);
+    return updated;
+  } catch (e) { toast(e.message, true); return null; }
+}
+
+async function hsMarkSeen(id) {
+  const l = hsListing(id);
+  if (l && !l.is_new) return;
+  if (await hsUpdateListing(id, { seen: true })) {
+    hsState.counts.new = Math.max(0, hsState.counts.new - 1);
+    hsRerenderItem(id);
+    hsRenderToolbar();
+    hsSetBadge(Math.max(0, Number($("#housing-badge").textContent || 0) - 1));
+    hsLoadSearches();
+  }
+}
+
+async function hsMarkUnseen(id) {
+  if (await hsUpdateListing(id, { seen: false }, "Marquée comme nouvelle")) {
+    await Promise.all([hsLoadListings(), hsLoadSearches()]);
+    loadHome();
+  }
+}
+
+async function hsToggleFav(id) {
+  const current = hsListing(id) || hsState.detail;
+  const fav = !(current && current.favorite);
+  if (await hsUpdateListing(id, { favorite: fav }, fav ? "Gardée en favori ⭐" : "Retirée des favoris")) {
+    await Promise.all([hsLoadListings(), hsLoadSearches()]);
+    loadHome();
+  }
+}
+
+async function hsToggleDismiss(id) {
+  const current = hsListing(id) || hsState.detail;
+  const dismissed = !(current && current.dismissed);
+  const msg = dismissed ? "Écartée — elle reste dans « ✕ Écartées »" : "Remise dans la liste";
+  if (await hsUpdateListing(id, { dismissed }, msg)) {
+    await Promise.all([hsLoadListings(), hsLoadSearches()]);
+    loadHome();
+  }
+}
+
+async function hsDeleteManual(id) {
+  if (!confirm("Supprimer cette annonce ajoutée à la main ?")) return;
+  try {
+    await api.del(`/api/housing/listings/${id}`);
+    closeModal("#hs-listing-modal");
+    toast("Annonce supprimée");
+    await hsLoad();
+    loadHome();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---- Vérifications (passages) ---- */
+
+async function hsRun(searchId) {
+  try {
+    const { run_id: runId } = await api.post(`/api/housing/searches/${searchId}/run`, {});
+    const s = hsState.searches.find((x) => x.id === searchId);
+    if (s) { s.running = true; s.last_run = { id: runId, sources: {} }; hsRenderSearches(); }
+    toast("Vérification lancée 🔎");
+    hsWatch(runId, searchId);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function hsRunAll() {
+  if (!hsState.searches.length) return hsOpenSearchModal();
+  try {
+    const { run_ids: runIds } = await api.post("/api/housing/run-all", {});
+    if (!runIds.length) return toast("Les vérifications sont déjà en cours");
+    toast(runIds.length > 1 ? `Vérification des ${runIds.length} recherches lancée 🔎` : "Vérification lancée 🔎");
+    runIds.forEach((id) => hsWatch(id, null));
+    hsLoadSearches();
+  } catch (e) { toast(e.message, true); }
+}
+
+/** Suit une vérification en direct jusqu'à la fin (sites lus, annonces trouvées). */
+function hsWatch(runId, searchId) {
+  if (hsState.polls.has(runId)) return;
+  hsState.polls.set(runId, searchId);
+  const tick = async () => {
+    let st = null;
+    try { st = await api.get(`/api/housing/runs/${runId}`); } catch { /* serveur redémarré : on arrête */ }
+    if (!st) { hsState.polls.delete(runId); return; }
+    const s = hsState.searches.find((x) => x.id === st.search_id);
+    const live = ["queued", "running"].includes(st.status);
+    if (s) { s.running = live; s.last_run = st; hsRenderSearches(); }
+    if (live) { setTimeout(tick, 1500); return; }
+    hsState.polls.delete(runId);
+    hsRunDone(st, s);
+  };
+  setTimeout(tick, 800);
+}
+
+async function hsRunDone(st, s) {
+  const name = s ? `« ${s.name} »` : "la recherche";
+  if (st.status === "error") toast(`${name} : ${st.error || "aucun site n'a répondu"}`, true);
+  else if (st.new_count) toast(`${st.new_count} nouvelle${st.new_count > 1 ? "s" : ""} annonce${st.new_count > 1 ? "s" : ""} pour ${name} 🏠`);
+  else toast(`Rien de nouveau pour ${name}`);
+  if (hsState.polls.size) return; // d'autres vérifications tournent encore : on rechargera à la fin
+  hsState.fitPending = hsState.fitPending || !hsState.markers.size;
+  await hsLoad();
+  loadHome();
+}
+
+async function hsPeriodic() {
+  if (document.hidden || !hsBooted) return;
+  const changed = await hsLoadSearches();
+  if (changed && !$("#hs-listing-modal").open) hsLoadListings(); // le robot a tourné entre-temps
+}
+
+/* ---- Modale : créer / modifier une recherche ---- */
+
+function hsHourOptions(from, to, selected) {
+  let html = "";
+  for (let h = from; h <= to; h++) html += `<option value="${h}" ${h === selected ? "selected" : ""}>${h} h</option>`;
+  return html;
+}
+
+function hsRoomOptions(selected) {
+  return `<option value="">—</option>` + HS_ROOMS.map((r) =>
+    `<option value="${r}" ${r === selected ? "selected" : ""}>${r}</option>`).join("");
+}
+
+function hsOpenSearchModal(id = null) {
+  const s = id ? hsState.searches.find((x) => x.id === id) : null;
+  const c = s ? s.criteria : {
+    zones: [], categories: ["apartment"], features: [], keywords_include: [],
+    keywords_exclude: ["sous-location"], sources: hsState.meta.sources.map((x) => x.key),
+  };
+  hsState.draft = { zones: (c.zones || []).map((z) => ({ ...z })) };
+  $("#hs-search-title").textContent = s ? "Modifier la recherche" : "Nouvelle recherche";
+  $("#hs-search-id").value = s ? s.id : "";
+  $("#hs-name").value = s ? s.name : "";
+  $("#hs-zone-q").value = "";
+  $("#hs-zone-km").value = "0";
+  hsCloseZoneResults();
+  hsRenderZoneChips();
+  $("#hs-categories").innerHTML = hsState.meta.categories.map((k) => `
+    <button type="button" class="owner-toggle ${c.categories.includes(k.key) ? "active" : ""}" data-key="${k.key}"
+            aria-pressed="${c.categories.includes(k.key)}">${k.emoji} ${esc(k.label)}</button>`).join("");
+  $("#hs-features").innerHTML = hsState.meta.features.map((f) => `
+    <button type="button" class="owner-toggle ${c.features.includes(f.key) ? "active" : ""}" data-key="${f.key}"
+            aria-pressed="${c.features.includes(f.key)}">${esc(f.label)}</button>`).join("");
+  $("#hs-price-min").value = c.price_min ?? "";
+  $("#hs-price-max").value = c.price_max ?? "";
+  $("#hs-rooms-min").innerHTML = hsRoomOptions(c.rooms_min ?? null);
+  $("#hs-rooms-max").innerHTML = hsRoomOptions(c.rooms_max ?? null);
+  $("#hs-surface-min").value = c.surface_min ?? "";
+  $("#hs-surface-max").value = c.surface_max ?? "";
+  $("#hs-kw-in").value = (c.keywords_include || []).join(", ");
+  $("#hs-kw-out").value = (c.keywords_exclude || []).join(", ");
+  $("#hs-sources").innerHTML = hsState.meta.sources.map((src) => `
+    <label class="hs-source">
+      <input type="checkbox" value="${src.key}" ${c.sources.includes(src.key) ? "checked" : ""} />
+      <span><span class="hs-src" style="--src:${src.color}">${esc(src.label)}</span><small>${esc(src.note)}</small></span>
+    </label>`).join("");
+  const interval = s ? s.interval_minutes : 60;
+  const sel = $("#hs-interval");
+  if (![...sel.options].some((o) => Number(o.value) === interval)) {
+    sel.insertAdjacentHTML("beforeend", `<option value="${interval}">${interval} min</option>`);
+  }
+  sel.value = String(interval);
+  $("#hs-from").innerHTML = hsHourOptions(0, 23, s ? s.active_from : 7);
+  $("#hs-to").innerHTML = hsHourOptions(1, 24, s ? s.active_to : 22);
+  $("#hs-auto").checked = s ? s.auto_run : true;
+  const notify = $("#hs-notify");
+  notify.checked = s ? s.notify : true;
+  notify.disabled = !hsState.meta.telegram_configured;
+  $("#hs-search-delete").classList.toggle("hidden", !s);
+  hsSyncRobot();
+  $("#hs-search-modal").showModal();
+}
+
+function hsSyncRobot() {
+  const auto = $("#hs-auto").checked;
+  $("#hs-robot-row").classList.toggle("is-off", !auto);
+  $("#hs-robot-hint").textContent = !hsState.meta.telegram_configured
+    ? "Gratuit : une vérification envoie une dizaine de requêtes aux sites. Telegram n'est pas configuré (voir TELEGRAM_BOT.md) : les nouveautés s'affichent ici."
+    : auto
+      ? "Gratuit : une vérification envoie une dizaine de requêtes aux sites. Telegram reçoit un résumé quand le robot trouve du nouveau."
+      : "Gratuit : une vérification envoie une dizaine de requêtes aux sites. Sans vérification automatique, rien ne part sur Telegram.";
+}
+
+$("#hs-auto").addEventListener("change", hsSyncRobot);
+
+["#hs-categories", "#hs-features"].forEach((sel) => $(sel).addEventListener("click", (e) => {
+  const btn = e.target.closest(".owner-toggle");
+  if (!btn) return;
+  btn.classList.toggle("active");
+  btn.setAttribute("aria-pressed", String(btn.classList.contains("active")));
+}));
+
+/* Lieux : saisie semi-automatique (communes, NPA, cantons) */
+
+let hsZoneTimer = null;
+let hsZoneOptions = [];
+let hsZoneIndex = -1;
+
+function hsCloseZoneResults() {
+  $("#hs-zone-results").classList.add("hidden");
+  $("#hs-zone-q").setAttribute("aria-expanded", "false");
+  hsZoneOptions = [];
+  hsZoneIndex = -1;
+}
+
+function hsRenderZoneResults() {
+  const box = $("#hs-zone-results");
+  box.innerHTML = hsZoneOptions.length
+    ? hsZoneOptions.map((z, i) => `
+        <button type="button" class="hs-zone-option ${i === hsZoneIndex ? "is-active" : ""}" role="option"
+                aria-selected="${i === hsZoneIndex}" data-i="${i}">
+          <strong>${esc(z.type === "canton" ? `Canton de ${z.label}` : z.label)}</strong><small>${esc(z.sublabel || "")}</small>
+        </button>`).join("")
+    : `<p class="hs-zone-empty" style="padding:.5rem .6rem">Aucun lieu ne correspond.</p>`;
+  box.classList.remove("hidden");
+  $("#hs-zone-q").setAttribute("aria-expanded", "true");
+}
+
+$("#hs-zone-q").addEventListener("input", (e) => {
+  clearTimeout(hsZoneTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2 && !/^\d/.test(q)) return hsCloseZoneResults();
+  hsZoneTimer = setTimeout(async () => {
+    try { hsZoneOptions = await api.get("/api/housing/places?q=" + encodeURIComponent(q)); } catch { hsZoneOptions = []; }
+    hsZoneIndex = hsZoneOptions.length ? 0 : -1;
+    hsRenderZoneResults();
+  }, 150);
+});
+
+$("#hs-zone-q").addEventListener("keydown", (e) => {
+  const open = !$("#hs-zone-results").classList.contains("hidden");
+  if (e.key === "Enter") {
+    e.preventDefault(); // Entrée choisit un lieu, elle n'envoie pas le formulaire
+    if (open && hsZoneOptions[hsZoneIndex]) hsAddZone(hsZoneOptions[hsZoneIndex]);
+  } else if (open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault();
+    const n = hsZoneOptions.length;
+    if (n) { hsZoneIndex = (hsZoneIndex + (e.key === "ArrowDown" ? 1 : n - 1)) % n; hsRenderZoneResults(); }
+  } else if (e.key === "Escape" && open) {
+    e.preventDefault(); // ferme la liste, pas la modale
+    hsCloseZoneResults();
+  }
+});
+
+$("#hs-zone-results").addEventListener("mousedown", (e) => {
+  const btn = e.target.closest(".hs-zone-option");
+  if (!btn) return;
+  e.preventDefault(); // garde le focus dans le champ
+  hsAddZone(hsZoneOptions[Number(btn.dataset.i)]);
+});
+
+$("#hs-zone-q").addEventListener("blur", () => setTimeout(hsCloseZoneResults, 150));
+
+function hsZoneKey(z) { return `${z.type}:${z.code}:${z.km || ""}`; }
+
+function hsAddZone(place) {
+  if (!place) return;
+  const km = Number($("#hs-zone-km").value);
+  const zone = km > 0 && place.type !== "canton"
+    ? { type: "radius", code: place.code, base: place.type, km, lat: place.lat, lng: place.lng, label: `${place.label} + ${km} km` }
+    : { type: place.type, code: place.code, label: place.label, lat: place.lat, lng: place.lng };
+  if (!hsState.draft.zones.some((z) => hsZoneKey(z) === hsZoneKey(zone))) hsState.draft.zones.push(zone);
+  $("#hs-zone-q").value = "";
+  hsCloseZoneResults();
+  hsRenderZoneChips();
+  $("#hs-zone-q").focus();
+}
+
+function hsRemoveZone(i) {
+  hsState.draft.zones.splice(i, 1);
+  hsRenderZoneChips();
+}
+
+function hsRenderZoneChips() {
+  const zones = hsState.draft.zones;
+  $("#hs-zone-chips").innerHTML = zones.length
+    ? zones.map((z, i) => {
+        const label = z.type === "canton" ? `Canton de ${z.label}` : z.label;
+        return `<span class="hs-zone-chip">${esc(label)}<button type="button" onclick="hsRemoveZone(${i})"
+                  aria-label="Retirer ${esc(label)}" title="Retirer">✕</button></span>`;
+      }).join("")
+    : `<span class="hs-zone-empty">Ajoutez au moins un lieu. Plusieurs lieux s'additionnent.</span>`;
+}
+
+$("#hs-search-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const andRun = e.submitter && e.submitter.value === "run";
+  const id = $("#hs-search-id").value;
+  if (!hsState.draft.zones.length) {
+    toast("Ajoutez au moins un lieu où chercher", true);
+    $("#hs-zone-q").focus();
+    return;
+  }
+  const words = (v) => v.split(",").map((w) => w.trim()).filter(Boolean);
+  const num = (sel) => ($(sel).value === "" ? null : Number($(sel).value));
+  const picked = (sel) => [...document.querySelectorAll(`${sel} .owner-toggle.active`)].map((b) => b.dataset.key);
+  const payload = {
+    name: $("#hs-name").value.trim(),
+    criteria: {
+      zones: hsState.draft.zones.map(({ type, code, base, km, lat, lng, label }) => ({ type, code, base, km, lat, lng, label })),
+      categories: picked("#hs-categories"),
+      price_min: num("#hs-price-min"), price_max: num("#hs-price-max"),
+      rooms_min: num("#hs-rooms-min"), rooms_max: num("#hs-rooms-max"),
+      surface_min: num("#hs-surface-min"), surface_max: num("#hs-surface-max"),
+      features: picked("#hs-features"),
+      keywords_include: words($("#hs-kw-in").value),
+      keywords_exclude: words($("#hs-kw-out").value),
+      sources: [...document.querySelectorAll("#hs-sources input:checked")].map((i) => i.value),
+    },
+    auto_run: $("#hs-auto").checked,
+    interval_minutes: Number($("#hs-interval").value),
+    notify: $("#hs-notify").checked,
+    active_from: Number($("#hs-from").value),
+    active_to: Number($("#hs-to").value),
+  };
+  if (!payload.criteria.categories.length) return toast("Choisissez au moins un type de logement", true);
+  if (!payload.criteria.sources.length) return toast("Choisissez au moins un site", true);
+  try {
+    const saved = id
+      ? await api.put(`/api/housing/searches/${id}`, payload)
+      : await api.post("/api/housing/searches", payload);
+    closeModal("#hs-search-modal");
+    toast(id ? "Recherche enregistrée" : "Recherche créée 🏠");
+    hsState.scope = String(saved.id);
+    hsState.fitPending = true;
+    await hsLoad();
+    if (andRun) hsRun(saved.id);
+    loadHome();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#hs-search-delete").addEventListener("click", async () => {
+  const id = $("#hs-search-id").value;
+  const s = hsState.searches.find((x) => String(x.id) === id);
+  if (!s || !confirm(`Supprimer la recherche « ${s.name} » ?\nLes annonces trouvées seulement par elle sont oubliées (pas les favoris).`)) return;
+  try {
+    await api.del(`/api/housing/searches/${id}`);
+    closeModal("#hs-search-modal");
+    toast("Recherche supprimée");
+    if (hsState.scope === id) hsState.scope = "";
+    hsState.fitPending = true;
+    await hsLoad();
+    loadHome();
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ---- Modale : coller une annonce (Facebook, WhatsApp, régie…) ---- */
+
+function hsOpenPaste() {
+  $("#hs-paste-form").reset();
+  hsState.pasted = {};
+  $("#hs-p-category").innerHTML = hsState.meta.categories.map((c) =>
+    `<option value="${c.key}">${c.emoji} ${esc(c.label)}</option>`).join("");
+  const ai = hsState.meta.ai_configured;
+  $("#hs-p-ai").disabled = !ai;
+  $("#hs-p-status").textContent = ai ? "" : "L'IA a besoin d'une clé OPENROUTER_API_KEY : remplissez la fiche à la main.";
+  $("#hs-paste-modal").showModal();
+}
+
+$("#hs-p-ai").addEventListener("click", async () => {
+  const text = $("#hs-p-text").value.trim();
+  const url = $("#hs-p-url").value.trim();
+  if (!text && !url) return toast("Collez d'abord le texte de l'annonce", true);
+  const btn = $("#hs-p-ai");
+  const status = $("#hs-p-status");
+  btn.disabled = true;
+  status.textContent = "🔍 Lecture de l'annonce…";
+  try {
+    const f = await api.post("/api/housing/extract", { text, url });
+    const set = (sel, v) => { if (v !== null && v !== undefined && v !== "") $(sel).value = v; };
+    set("#hs-p-title", f.title);
+    set("#hs-p-price", f.price);
+    set("#hs-p-rooms", f.rooms);
+    set("#hs-p-surface", f.surface);
+    set("#hs-p-street", f.street);
+    set("#hs-p-zip", f.zipcode);
+    set("#hs-p-city", f.city);
+    set("#hs-p-category", f.category);
+    hsState.pasted = { charges: f.charges, available_from: f.available_from, features: f.features,
+                       floor: f.floor, description: f.description || text };
+    status.textContent = "✅ Fiche remplie — vérifiez et corrigez si besoin.";
+  } catch (e) {
+    status.textContent = "";
+    toast(e.message, true);
+  } finally {
+    btn.disabled = !hsState.meta.ai_configured;
+  }
+});
+
+$("#hs-paste-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const num = (sel) => ($(sel).value === "" ? null : Number($(sel).value));
+  const p = hsState.pasted;
+  const payload = {
+    url: $("#hs-p-url").value.trim(),
+    title: $("#hs-p-title").value.trim(),
+    description: p.description || $("#hs-p-text").value.trim(),
+    category: $("#hs-p-category").value,
+    price: num("#hs-p-price"), charges: p.charges ?? null,
+    rooms: num("#hs-p-rooms"), surface: num("#hs-p-surface"), floor: p.floor ?? null,
+    street: $("#hs-p-street").value.trim(), zipcode: $("#hs-p-zip").value.trim(), city: $("#hs-p-city").value.trim(),
+    available_from: p.available_from ?? null, features: p.features || [],
+  };
+  try {
+    const added = await api.post("/api/housing/listings", payload);
+    closeModal("#hs-paste-modal");
+    toast(added.searches.length
+      ? `Annonce ajoutée — elle correspond à ${added.searches.length > 1 ? `${added.searches.length} recherches` : "« " + added.searches[0].name + " »"} 📋`
+      : "Annonce ajoutée 📋");
+    await hsLoad();
+  } catch (err) { toast(err.message, true); }
+});
+
+/* ---- Carte d'accueil ---- */
+
+function hsRenderHomeCard(h) {
+  const box = $("#home-housing");
+  if (!box || !h) return;
+  hsSetBadge(h.new_count);
+  if (!h.searches && !h.newest.length) {
+    box.innerHTML = `<p class="muted">Aucune recherche — créez-en une dans l'onglet Logement.</p>`;
+    return;
+  }
+  const rows = h.newest.map((l) => `
+    <div class="home-item">
+      ${l.image_url
+        ? `<img class="home-thumb" src="${esc(l.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="hsImgFail(this)" />`
+        : `<span class="home-thumb">🏢</span>`}
+      <div class="info">
+        <strong>${hsPrice(l)}${l.rooms ? ` · ${l.rooms} p.` : ""}${l.surface ? ` · ${l.surface} m²` : ""}</strong>
+        <small>${esc([l.zipcode, l.city].filter(Boolean).join(" "))}</small>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="goToHousing(${l.id})">Voir</button>
+    </div>`).join("");
+  const n = h.new_count;
+  box.innerHTML = (rows || `<p class="muted">Rien de nouveau : tout a été vu.</p>`) +
+    `<p class="muted fridge-hint">${n ? `${n} nouvelle${n > 1 ? "s" : ""} annonce${n > 1 ? "s" : ""} à regarder. ` : ""}${
+      h.last_run_at ? `Dernière vérification ${hsAgo(h.last_run_at)}.` : "Pas encore de vérification."}</p>`;
+}
+
+function goToHousing(id) {
+  document.querySelector('.tab[data-view="housing"]').click();
+  if (id) hsOpenListing(id);
+}
+
 /* ---------------- Aide « (i) » des cartes d'accueil ----------------
    Ce que chaque fonctionnalité sait faire depuis Telegram, avec un exemple.
    Le contenu est du HTML statique écrit ici — rien ne vient de l'utilisateur. */
@@ -2404,6 +3541,21 @@ const HOME_HELP = {
       ["bot", "🎬 Séries en cours\n\n• The Bear 🆕 3 épisode(s) à voir\n• Severance\n   Prochain : S03E01 le 12/09\n\n🍿 2 film(s) à voir"],
     ],
   },
+
+  housing: {
+    title: "🏠 Depuis Telegram",
+    needsAI: false,
+    paragraphs: [
+      "Quand une recherche se vérifie <b>toute seule</b>, le bot envoie un résumé des nouvelles annonces : loyer, pièces, m², lieu et lien. Une fois par vérification, et jamais deux fois la même annonce. Une vérification lancée à la main ne part pas sur Telegram : vous avez le résultat sous les yeux.",
+      "<code>/apparts</code> — où en sont les recherches, les dernières trouvailles et les favoris.",
+      "Le tri se fait dans l'onglet Logement : ☆ favori, ✕ pas pour nous. Une annonce ouverte passe en « déjà vue » pour toute la maison.",
+    ],
+    chat: [
+      ["bot", "🏠 2 nouvelles annonces — « 3.5 pièces Lausanne »\n\n• 3.5 p · 78 m² · CHF 2'150 — Lausanne (1004)\n  https://www.homegate.ch/louer/4003524589\n• 4 p · 92 m² · CHF 2'480 — Pully (1009)\n  https://flatfox.ch/fr/flat/…"],
+      ["vous", "/apparts"],
+      ["bot", "🏠 Appartements\n\n• 3.5 pièces Lausanne ⏱ — 🆕 2 nouvelle(s) sur 64\n\n⭐ 3 favori(s)"],
+    ],
+  },
 };
 
 // Ce que le bot sait faire ici et maintenant — chargé une fois, au premier clic.
@@ -2456,7 +3608,7 @@ document.querySelectorAll(".info-btn").forEach((btn) =>
 /* ---------------- Init ---------------- */
 
 (async function init() {
-  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans(), loadGrocery(), loadFridge(), loadWishlist(), loadStorage(), loadShowsLibrary()]);
+  await Promise.all([loadHome(), loadPlants(), loadDishes(), loadPlans(), loadGrocery(), loadFridge(), loadWishlist(), loadStorage(), loadShowsLibrary(), hsBoot()]);
   checkNotifications();
-  setInterval(() => { loadPlants(); loadHome(); checkNotifications(); }, 60_000);
+  setInterval(() => { loadPlants(); loadHome(); checkNotifications(); hsPeriodic(); }, 60_000);
 })();

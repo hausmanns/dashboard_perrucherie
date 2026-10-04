@@ -1,4 +1,5 @@
-"""Dashboard de la Perrucherie — household dashboard (plants, meals, wishlist, storage).
+"""Dashboard de la Perrucherie — household dashboard (plants, meals, wishlist, storage,
+shows, apartment search).
 
 Serves a REST API (fully documented at /docs, OpenAPI at /openapi.json)
 and the static frontend. Designed to be reachable from any device on the LAN
@@ -15,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, get_conn, init_db
 from . import bot
-from .routers import grocery, meals, plants, shows, storage, wishlist
+from .housing import engine as housing_engine
+from .routers import grocery, housing, meals, plants, shows, storage, wishlist
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -24,7 +26,8 @@ app = FastAPI(
     description=(
         "Dashboard de gestion de la maison : suivi des plantes (arrosage, rappels), "
         "planification des repas (meal prep), listes d'envies/cadeaux, inventaire "
-        "des cartons de rangement et suivi des séries/films (TMDb). API REST "
+        "des cartons de rangement, suivi des séries/films (TMDb) et recherche "
+        "d'appartement (Flatfox, Homegate/ImmoScout24, immobilier.ch). API REST "
         "complète, pensée pour être lue et écrite par des agents."
     ),
     version="0.1.0",
@@ -36,12 +39,14 @@ app.include_router(grocery.router)
 app.include_router(wishlist.router)
 app.include_router(storage.router)
 app.include_router(shows.router)
+app.include_router(housing.router)
 app.include_router(bot.router)
 
 
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
+    housing_engine.recover_interrupted_runs()
     bot.start()
 
 
@@ -135,6 +140,7 @@ def summary():
             "open_wishes": open_wishes,          # encore à offrir
             "upcoming_birthdays": upcoming_birthdays,
         },
+        "housing": housing.summary(),            # recherche d'appartement
         "shows": {
             "total": len(all_shows),
             "watching": len(watching_shows),

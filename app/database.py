@@ -206,6 +206,88 @@ CREATE TABLE IF NOT EXISTS show_episodes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_show_episodes_show ON show_episodes(show_id);
+
+-- Recherche d'appartement (app/housing/) ------------------------------------
+CREATE TABLE IF NOT EXISTS housing_searches (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL,
+    criteria         TEXT NOT NULL DEFAULT '{}',   -- JSON : zones, loyer, pièces, surface, types, équipements, mots-clés, sites
+    auto_run         INTEGER NOT NULL DEFAULT 0,   -- 1 = le robot la relance tout seul
+    interval_minutes INTEGER NOT NULL DEFAULT 60,
+    notify           INTEGER NOT NULL DEFAULT 1,   -- résumé Telegram des nouvelles annonces
+    active_from      INTEGER NOT NULL DEFAULT 7,   -- heures où le robot a le droit de tourner [from, to)
+    active_to        INTEGER NOT NULL DEFAULT 22,
+    last_run_at      TEXT,                         -- NULL = jamais lancée (ou critères changés) → passage « de référence »
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS housing_listings (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT NOT NULL,                  -- flatfox | homegate | immobilier | manual
+    source_id      TEXT NOT NULL,
+    smg_id         TEXT,                           -- id commun Flatfox / Homegate / ImmoScout24 (dédoublonnage)
+    duplicate_of   INTEGER REFERENCES housing_listings(id) ON DELETE SET NULL,  -- même appart sur un autre site
+    url            TEXT DEFAULT '',
+    title          TEXT DEFAULT '',
+    description    TEXT DEFAULT '',
+    category       TEXT DEFAULT 'apartment',       -- apartment | house | furnished | room | other
+    price          INTEGER,                        -- loyer mensuel CHF, charges comprises si connues
+    charges        INTEGER,
+    rooms          REAL,
+    surface        INTEGER,                        -- m²
+    floor          INTEGER,
+    street         TEXT DEFAULT '',
+    zipcode        TEXT DEFAULT '',
+    city           TEXT DEFAULT '',
+    canton         TEXT DEFAULT '',
+    lat            REAL,
+    lng            REAL,
+    geo_precision  TEXT DEFAULT 'none',            -- exact | zip (centre du NPA) | none
+    available_from TEXT,                           -- ISO date, 'immediately' ou NULL (à convenir)
+    features       TEXT DEFAULT '',                -- clés séparées par des virgules : balcony,elevator…
+    features_known INTEGER NOT NULL DEFAULT 0,     -- 1 = équipements structurés (une absence est fiable)
+    image_url      TEXT DEFAULT '',
+    images         TEXT DEFAULT '[]',              -- JSON
+    agency         TEXT DEFAULT '',
+    published_at   TEXT,
+    first_seen_at  TEXT NOT NULL,                  -- premier passage du robot qui l'a trouvée
+    last_seen_at   TEXT NOT NULL,
+    price_history  TEXT DEFAULT '[]',              -- JSON [{"at", "from", "to"}]
+    seen_at        TEXT,                           -- ouverte par la maison → plus « nouvelle »
+    favorite       INTEGER NOT NULL DEFAULT 0,
+    dismissed      INTEGER NOT NULL DEFAULT 0,     -- « pas pour nous »
+    UNIQUE (source, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_housing_listings_smg ON housing_listings(smg_id);
+CREATE INDEX IF NOT EXISTS idx_housing_listings_dup ON housing_listings(duplicate_of);
+
+CREATE TABLE IF NOT EXISTS housing_matches (
+    search_id   INTEGER NOT NULL REFERENCES housing_searches(id) ON DELETE CASCADE,
+    listing_id  INTEGER NOT NULL REFERENCES housing_listings(id) ON DELETE CASCADE,
+    matched_at  TEXT NOT NULL,
+    notified_at TEXT,                              -- déjà annoncée sur Telegram (ou passage de référence)
+    PRIMARY KEY (search_id, listing_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_housing_matches_listing ON housing_matches(listing_id);
+
+CREATE TABLE IF NOT EXISTS housing_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_id   INTEGER REFERENCES housing_searches(id) ON DELETE CASCADE,
+    trigger     TEXT NOT NULL DEFAULT 'manual',    -- manual | auto
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    status      TEXT NOT NULL DEFAULT 'queued',    -- queued | running | ok | partial | error
+    found       INTEGER DEFAULT 0,                 -- résultats de la recherche après ce passage
+    new_count   INTEGER DEFAULT 0,
+    requests    INTEGER DEFAULT 0,                 -- requêtes HTTP envoyées (le seul « coût »)
+    error       TEXT,
+    details     TEXT DEFAULT '{}'                  -- JSON : état par site, avertissements
+);
+
+CREATE INDEX IF NOT EXISTS idx_housing_runs_search ON housing_runs(search_id);
 """
 
 

@@ -15,6 +15,10 @@ feature registry. Features:
 - **show tracker digest** — `/series` reads what's being watched and what's
   next; a daily sync (`sync_and_notify_shows`) re-pulls followed shows from
   TMDb and announces episodes that just aired and are not yet marked watched.
+- **apartment search** — the scheduler ticks `housing.engine.auto_run_check`
+  every 10 min (with or without Telegram: results also land in the
+  dashboard); each run sends its own summary of new listings. `/apparts`
+  reads the current state.
 
 Future features should register their own cron jobs here (and in
 main.startup) via `add_cron_job()`.
@@ -33,6 +37,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from . import telegram, tmdb
+from .housing import engine as housing_engine
 from .config import OPENROUTER_API_KEY, TELEGRAM_TZ
 from .database import get_conn, rows_to_dicts
 from .nlu import parse_storage_message, parse_wish_details, parse_wish_message
@@ -70,6 +75,7 @@ router = APIRouter(prefix="/api/bot", tags=["bot"])
 WATERING_HOURS = (9, 21)  # daily checks, server-local time
 SHOWS_SYNC_HOUR = 8            # the daily show sync + digest is due from 08:00…
 SHOWS_SYNC_CHECK_MINUTES = 15  # …and checked this often until it has run (see shows_sync_due)
+HOUSING_CHECK_MINUTES = 10     # apartment searches: how often the robot looks for a due one
 
 _scheduler: BackgroundScheduler | None = None
 _cron_jobs: list[tuple] = []  # (func, hour, minute)
@@ -299,6 +305,45 @@ def sync_and_notify_shows() -> bool:
                 [(datetime.now().isoformat(timespec="seconds"), e["id"]) for e in due],
             )
     return sent
+
+
+# ---------------- Recherche d'appartement ----------------
+
+def housing_message() -> str:
+    """Build the French « where is the apartment hunt » digest for /apparts."""
+    with get_conn() as conn:
+        searches = rows_to_dicts(conn.execute(
+            """SELECT s.*, (SELECT MAX(finished_at) FROM housing_runs r WHERE r.search_id = s.id) AS last_check
+               FROM housing_searches s ORDER BY s.id""").fetchall())
+        counts = {r["search_id"]: dict(r) for r in conn.execute(
+            """SELECT m.search_id, SUM(l.seen_at IS NULL AND l.dismissed = 0) AS new, COUNT(*) AS total
+               FROM housing_matches m JOIN housing_listings l ON l.id = m.listing_id
+               GROUP BY m.search_id""").fetchall()}
+        newest = rows_to_dicts(conn.execute(
+            """SELECT l.* FROM housing_listings l
+               WHERE l.duplicate_of IS NULL AND l.seen_at IS NULL AND l.dismissed = 0
+                 AND l.id IN (SELECT listing_id FROM housing_matches)
+               ORDER BY l.first_seen_at DESC LIMIT 5""").fetchall())
+        favorites = conn.execute(
+            "SELECT COUNT(*) FROM housing_listings WHERE favorite = 1 AND duplicate_of IS NULL").fetchone()[0]
+    if not searches:
+        return "🏠 Appartements\n\nAucune recherche — créez-en une dans l'onglet Logement du dashboard."
+    lines = ["🏠 Appartements", ""]
+    for s in searches:
+        c = counts.get(s["id"], {"new": 0, "total": 0})
+        last = f" · dernier passage {_fmt_air_date(s['last_check'])} {s['last_check'][11:16]}" if s["last_check"] else ""
+        robot = " ⏱" if s["auto_run"] else ""
+        new = f"🆕 {c['new']} nouvelle(s)" if c["new"] else "rien de nouveau"
+        lines.append(f"• {s['name']}{robot} — {new} sur {c['total']}{last}")
+    if newest:
+        lines += ["", "Dernières trouvailles :"] + [housing_engine.alert_line(l) for l in newest]
+    if favorites:
+        lines += ["", f"⭐ {favorites} favori(s)"]
+    return "\n".join(lines)
+
+
+def _housing_command(args: str, chat_id: int, user_id: int) -> str:
+    return housing_message()
 
 
 # ---------------- Ajouter une envie en langage naturel ----------------
@@ -534,6 +579,9 @@ def _help_command(args: str, chat_id: int, user_id: int) -> str:
         "\n"
         "Séries & films :\n"
         "/series — ce qui est en cours, les nouveaux épisodes, les films à voir\n"
+        "\n"
+        "Appartements :\n"
+        "/apparts — les recherches, les nouvelles annonces, les favoris\n"
         "\n"
         "En message privé, pas besoin de commande : écris ton envie ou ce que tu sors "
         "d'un carton normalement, je comprends et je mets à jour."
@@ -778,9 +826,31 @@ def _put_back_command(args: str, chat_id: int, user_id: int) -> str:
 
 
 def start() -> None:
-    """Register commands + cron jobs and start scheduler/polling. Idempotent."""
-    if not telegram.is_configured():
-        return
+    """Register commands + cron jobs and start scheduler/polling. Idempotent.
+
+    The scheduler itself always runs: the apartment searches' auto check fills
+    the dashboard even without Telegram (Telegram is only their alert channel).
+    Everything else here needs the bot."""
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = BackgroundScheduler(daemon=True)
+        _scheduler.add_job(
+            housing_engine.auto_run_check,
+            CronTrigger(minute=f"*/{HOUSING_CHECK_MINUTES}", timezone=TELEGRAM_TZ or None),
+            id="housing-auto-run",
+            next_run_time=datetime.now().astimezone() + timedelta(seconds=30),  # laisse l'app démarrer
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=None,  # machine en veille : on rattrape au réveil
+        )
+        if telegram.is_configured():
+            _start_telegram_jobs()
+        _scheduler.start()
+    if telegram.is_configured():
+        telegram.start_polling()
+
+
+def _start_telegram_jobs() -> None:
     telegram.register_command("/plantes", _plants_command)
     telegram.register_command("/envies", _wishlist_command)
     telegram.register_command("/envie", _wish_add_command)
@@ -791,31 +861,27 @@ def start() -> None:
     telegram.register_command("/sorti", _take_out_command)
     telegram.register_command("/range", _put_back_command)
     telegram.register_command("/series", _shows_command)
+    telegram.register_command("/apparts", _housing_command)
     telegram.register_text_handler(_storage_text_handler)
     telegram.register_text_handler(_wish_text_handler)
     telegram.register_command("/help", _help_command)
     add_cron_job(send_watering_check, 9, 0)
     add_cron_job(send_watering_check, 21, 0)
 
-    global _scheduler
-    if _scheduler is None:
-        _scheduler = BackgroundScheduler(daemon=True)
-        for func, hour, minute in _cron_jobs:
-            _scheduler.add_job(
-                func,
-                CronTrigger(hour=hour, minute=minute, timezone=TELEGRAM_TZ or None),
-                id=f"bot-{func.__name__}-{hour:02d}{minute:02d}",
-            )
+    for func, hour, minute in _cron_jobs:
         _scheduler.add_job(
-            _shows_sync_check,
-            CronTrigger(minute=f"*/{SHOWS_SYNC_CHECK_MINUTES}", timezone=TELEGRAM_TZ or None),
-            id="bot-shows-sync-check",
-            next_run_time=datetime.now().astimezone(),  # rattrape aussi au démarrage
-            coalesce=True,
-            misfire_grace_time=None,  # un contrôle en retard (machine en veille) tourne quand même
+            func,
+            CronTrigger(hour=hour, minute=minute, timezone=TELEGRAM_TZ or None),
+            id=f"bot-{func.__name__}-{hour:02d}{minute:02d}",
         )
-        _scheduler.start()
-    telegram.start_polling()
+    _scheduler.add_job(
+        _shows_sync_check,
+        CronTrigger(minute=f"*/{SHOWS_SYNC_CHECK_MINUTES}", timezone=TELEGRAM_TZ or None),
+        id="bot-shows-sync-check",
+        next_run_time=datetime.now().astimezone(),  # rattrape aussi au démarrage
+        coalesce=True,
+        misfire_grace_time=None,  # un contrôle en retard (machine en veille) tourne quand même
+    )
 
 
 def stop() -> None:

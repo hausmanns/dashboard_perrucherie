@@ -7,6 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Karla:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet.markercluster/MarkerCluster.css" />
   <link rel="stylesheet" href="/static/style.css" />
   <meta name="theme-color" content="#fbf7ee" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦜</text></svg>" />
@@ -21,6 +23,7 @@
     <symbol id="i-gift" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/></symbol>
     <symbol id="i-box" viewBox="0 0 24 24"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.7 4.73a2 2 0 0 0 2 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/></symbol>
     <symbol id="i-tv" viewBox="0 0 24 24"><rect width="20" height="15" x="2" y="7" rx="2"/><path d="m17 2-5 5-5-5"/></symbol>
+    <symbol id="i-building" viewBox="0 0 24 24"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/></symbol>
   </svg>
 
@@ -40,6 +43,7 @@
       <button class="tab" data-view="wishlist"><svg class="ico"><use href="#i-gift"/></svg><span class="tab-lbl">Envies</span></button>
       <button class="tab" data-view="storage"><svg class="ico"><use href="#i-box"/></svg><span class="tab-lbl">Rangement</span><span id="storage-badge" class="badge hidden"></span></button>
       <button class="tab" data-view="shows"><svg class="ico"><use href="#i-tv"/></svg><span class="tab-lbl">Séries</span><span id="shows-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="housing"><svg class="ico"><use href="#i-building"/></svg><span class="tab-lbl">Logement</span><span id="housing-badge" class="badge hidden"></span></button>
     </nav>
     <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage" aria-label="Activer les notifications d'arrosage"><svg class="ico"><use href="#i-bell"/></svg></button>
   </header>
@@ -72,6 +76,11 @@
           <h2>🎬 Nouveaux épisodes<button class="info-btn" data-help="shows" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-shows"></div>
           <div id="home-shows" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card" data-sec="housing">
+          <h2>🏠 Appartements<button class="info-btn" data-help="housing" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-housing"></div>
+          <div id="home-housing" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
         <div class="card home-card" data-sec="stats">
           <h2>📊 En bref</h2>
@@ -266,6 +275,50 @@
 
       <div id="shows-stats-panel" class="shows-panel hidden">
         <div id="shows-stats-content"></div>
+      </div>
+    </section>
+
+    <!-- ================= LOGEMENT (recherche d'appartement) ================= -->
+    <section id="view-housing" class="view">
+      <div class="section-head">
+        <h2>Trouver un appart</h2>
+        <div class="plan-actions">
+          <button class="btn btn-ghost" id="hs-paste-btn" title="Une annonce vue sur Facebook, WhatsApp, le site d'une régie…">📋 Coller une annonce</button>
+          <button class="btn btn-ghost" id="hs-run-all-btn" title="Vérifier toutes les recherches maintenant">Tout vérifier</button>
+          <button class="btn btn-primary" id="hs-new-search-btn">+ Nouvelle recherche</button>
+        </div>
+      </div>
+
+      <div id="hs-searches" class="hs-searches" aria-label="Recherches enregistrées"></div>
+
+      <div class="hs-toolbar">
+        <select id="hs-scope" class="storage-select" aria-label="Recherche affichée"></select>
+        <div class="chip-row" id="hs-views" role="tablist" aria-label="Quelles annonces"></div>
+        <select id="hs-sort" class="storage-select" aria-label="Trier les annonces">
+          <option value="recent">Les plus récentes</option>
+          <option value="price_asc">Loyer le plus bas</option>
+          <option value="price_m2">Meilleur prix au m²</option>
+          <option value="surface_desc">Les plus grandes</option>
+          <option value="rooms_desc">Le plus de pièces</option>
+        </select>
+        <input id="hs-filter" class="hs-filter" type="search" autocomplete="off" placeholder="Filtrer : rue, quartier, mot…" aria-label="Filtrer les annonces" />
+        <div class="seg hs-pane-switch" id="hs-pane-switch">
+          <button class="seg-btn active" data-pane="list">Liste</button>
+          <button class="seg-btn" data-pane="map">Carte</button>
+        </div>
+      </div>
+
+      <div class="hs-split" id="hs-split" data-pane="list">
+        <div class="hs-list" id="hs-list"></div>
+        <div class="hs-map-wrap">
+          <div id="hs-map" class="hs-map" role="region" aria-label="Carte des annonces"></div>
+          <div class="hs-legend" aria-hidden="true">
+            <span><i class="hs-dot is-new"></i>nouvelle</span>
+            <span><i class="hs-dot"></i>déjà vue</span>
+            <span><i class="hs-dot is-fav">★</i>favori</span>
+            <span><i class="hs-dot is-approx"></i>position approximative</span>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -522,7 +575,147 @@
     <div id="show-modal-body"></div>
   </dialog>
 
+  <!-- ================= MODALE RECHERCHE D'APPART ================= -->
+  <dialog id="hs-search-modal" class="modal hs-modal">
+    <form method="dialog" id="hs-search-form" autocomplete="off">
+      <h3 id="hs-search-title">Nouvelle recherche</h3>
+      <input type="hidden" id="hs-search-id" />
+      <label>Nom<input id="hs-name" placeholder="3.5 pièces à Lausanne" maxlength="80" /></label>
+
+      <fieldset class="hs-field">
+        <legend>Où chercher ?</legend>
+        <div class="hs-zone-picker">
+          <div class="hs-zone-inputs">
+            <input id="hs-zone-q" type="search" placeholder="Commune, NPA ou canton — ex. Pully, 1004, Vaud"
+                   role="combobox" aria-expanded="false" aria-controls="hs-zone-results" aria-autocomplete="list" />
+            <select id="hs-zone-km" aria-label="Autour du lieu">
+              <option value="0">Pile ce lieu</option>
+              <option value="2">+ 2 km autour</option>
+              <option value="5">+ 5 km autour</option>
+              <option value="10">+ 10 km autour</option>
+              <option value="20">+ 20 km autour</option>
+            </select>
+          </div>
+          <div class="hs-zone-results hidden" id="hs-zone-results" role="listbox"></div>
+        </div>
+        <div class="hs-zone-chips" id="hs-zone-chips"></div>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Quel logement ?</legend>
+        <div class="owner-toggles" id="hs-categories"></div>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Loyer par mois, charges comprises</legend>
+        <div class="field-row">
+          <label>De<input id="hs-price-min" type="number" min="0" step="50" inputmode="numeric" placeholder="1500" /></label>
+          <label>À<input id="hs-price-max" type="number" min="0" step="50" inputmode="numeric" placeholder="2600" /></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Taille</legend>
+        <div class="field-row">
+          <label>Pièces, au moins<select id="hs-rooms-min"></select></label>
+          <label>Pièces, au plus<select id="hs-rooms-max"></select></label>
+        </div>
+        <div class="field-row">
+          <label>Surface, au moins (m²)<input id="hs-surface-min" type="number" min="0" step="5" inputmode="numeric" placeholder="60" /></label>
+          <label>Surface, au plus (m²)<input id="hs-surface-max" type="number" min="0" step="5" inputmode="numeric" /></label>
+        </div>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Indispensable</legend>
+        <div class="owner-toggles" id="hs-features"></div>
+        <p class="hs-hint">Quand un site ne dit rien d'un équipement, l'annonce reste dans la liste avec « à vérifier ».</p>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Mots dans l'annonce</legend>
+        <label>Au moins un de ces mots<input id="hs-kw-in" placeholder="lac, cheminée, jardin" /></label>
+        <label>Aucun de ces mots<input id="hs-kw-out" placeholder="sous-location, colocation, temporaire" /></label>
+        <p class="hs-hint">Séparez les mots par des virgules.</p>
+      </fieldset>
+
+      <fieldset class="hs-field">
+        <legend>Sites à lire</legend>
+        <div class="hs-sources" id="hs-sources"></div>
+      </fieldset>
+
+      <fieldset class="hs-field hs-robot">
+        <legend>Vérification automatique</legend>
+        <label class="hs-switch"><input type="checkbox" id="hs-auto" /><span>Vérifier tout seul</span></label>
+        <div class="hs-robot-row" id="hs-robot-row">
+          <label>Toutes les
+            <select id="hs-interval">
+              <option value="30">30 min</option>
+              <option value="60" selected>heures</option>
+              <option value="120">2 heures</option>
+              <option value="180">3 heures</option>
+              <option value="360">6 heures</option>
+              <option value="720">12 heures</option>
+              <option value="1440">24 heures</option>
+            </select>
+          </label>
+          <label>de<select id="hs-from"></select></label>
+          <label>à<select id="hs-to"></select></label>
+        </div>
+        <label class="hs-switch"><input type="checkbox" id="hs-notify" checked /><span>M'avertir sur Telegram quand il y a du nouveau</span></label>
+        <p class="hs-hint" id="hs-robot-hint">Gratuit : une vérification envoie une dizaine de requêtes aux sites.</p>
+      </fieldset>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost hs-delete-btn hidden" id="hs-search-delete">Supprimer</button>
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-ghost" value="save">Enregistrer</button>
+        <button type="submit" class="btn btn-primary" value="run">Enregistrer et chercher</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE COLLER UNE ANNONCE ================= -->
+  <dialog id="hs-paste-modal" class="modal">
+    <form method="dialog" id="hs-paste-form" autocomplete="off">
+      <h3>Coller une annonce</h3>
+      <p class="hs-hint hs-lead">Pour ce qu'aucun robot ne peut lire : Facebook, WhatsApp, le site d'une régie… Collez le texte, l'IA remplit la fiche, et l'annonce rejoint la carte.</p>
+      <label>Lien de l'annonce<input id="hs-p-url" type="url" placeholder="https://www.facebook.com/…" /></label>
+      <label>Texte de l'annonce<textarea id="hs-p-text" rows="5" placeholder="Collez ici le texte du post…"></textarea></label>
+      <div class="hs-ai-row">
+        <button type="button" class="btn btn-ghost btn-sm" id="hs-p-ai">✨ Remplir avec l'IA</button>
+        <small id="hs-p-status" class="muted" role="status"></small>
+      </div>
+      <label>Titre<input id="hs-p-title" placeholder="3.5 pièces avec balcon" maxlength="160" /></label>
+      <div class="field-row">
+        <label>Loyer (CHF)<input id="hs-p-price" type="number" min="0" step="10" inputmode="numeric" /></label>
+        <label>Pièces<input id="hs-p-rooms" type="number" min="0" step="0.5" inputmode="decimal" /></label>
+        <label>Surface (m²)<input id="hs-p-surface" type="number" min="0" inputmode="numeric" /></label>
+      </div>
+      <label>Rue et numéro<input id="hs-p-street" placeholder="Avenue de Béthusy 20" /></label>
+      <div class="field-row">
+        <label>NPA<input id="hs-p-zip" maxlength="4" inputmode="numeric" placeholder="1012" /></label>
+        <label>Localité<input id="hs-p-city" placeholder="Lausanne" /></label>
+      </div>
+      <label>Type<select id="hs-p-category"></select></label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Ajouter l'annonce</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= MODALE ANNONCE (détail) ================= -->
+  <dialog id="hs-listing-modal" class="modal show-modal hs-listing-modal">
+    <div class="show-modal-close">
+      <button type="button" class="btn btn-ghost btn-sm" data-close>✕ Fermer</button>
+    </div>
+    <div id="hs-listing-body"></div>
+  </dialog>
+
   <div id="toast" class="toast hidden"></div>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/vendor/leaflet.markercluster/leaflet.markercluster.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

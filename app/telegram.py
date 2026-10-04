@@ -63,18 +63,21 @@ def split_message(text: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
     return chunks or [text]
 
 
-def send_message(text: str, chat_id: Optional[int] = None) -> bool:
+def send_message(text: str, chat_id: Optional[int] = None, disable_preview: bool = False) -> bool:
     """Send a plain-text message to the configured chat. Returns True on success.
 
     Text over Telegram's length cap goes out as several messages, cut on line
-    breaks — sent whole, it would be rejected outright, every single time."""
+    breaks — sent whole, it would be rejected outright, every single time.
+    `disable_preview` drops the link preview card (a list of links would
+    otherwise get a big card for the first one only)."""
     if not is_configured():
         logger.info("Telegram not configured — message not sent")
         return False
     target = chat_id or TELEGRAM_CHAT_ID
+    extra = {"link_preview_options": {"is_disabled": True}} if disable_preview else {}
     try:
         for chunk in split_message(text):
-            r = httpx.post(f"{API}/sendMessage", json={"chat_id": target, "text": chunk}, timeout=10)
+            r = httpx.post(f"{API}/sendMessage", json={"chat_id": target, "text": chunk, **extra}, timeout=10)
             r.raise_for_status()
         return True
     except httpx.HTTPError:
