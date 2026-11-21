@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import date, timedelta
 from urllib.parse import urlparse
 
 from .. import openrouter
@@ -41,6 +42,7 @@ JSON (sans markdown, sans texte autour) :
 }}
 
 Règles :
+- Nous sommes le {today}. Une date sans année (« dès le 1er décembre ») est sa prochaine occurrence.
 - N'invente jamais un prix, une adresse ou une surface absents du texte.
 - « 1800.- + 200.- de charges » → price 2000, charges 200. Un loyer sans mention des charges reste tel quel.
 - Une « reprise de bail » ou une « sous-location » reste une annonce : décris-la dans le titre.
@@ -84,6 +86,21 @@ def fetch_page_text(url: str) -> str:
         fetcher.close()
 
 
+def _upcoming(iso: str) -> str:
+    """A date the model placed in the past (wrong year guessed) → its next occurrence."""
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return iso
+    today = date.today()
+    while d < today - timedelta(days=45):
+        try:
+            d = d.replace(year=d.year + 1)
+        except ValueError:  # 29 février
+            d = d.replace(year=d.year + 1, day=28)
+    return d.isoformat()
+
+
 def clean(data: dict) -> dict:
     """Keep only the expected keys, with sane types."""
     category = data.get("category") if data.get("category") in CATEGORIES else "apartment"
@@ -91,6 +108,8 @@ def clean(data: dict) -> dict:
     available = data.get("available_from")
     if available not in (None, "immediately") and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(available)):
         available = None
+    if available and available != "immediately":
+        available = _upcoming(available)
     return {
         "title": str(data.get("title") or "").strip()[:160],
         "category": category,
@@ -121,6 +140,6 @@ async def extract(text: str, url: str = "") -> dict:
     prompt = PROMPT.format(
         categories=", ".join(f'"{c}"' for c in CATEGORIES),
         features=", ".join(f'"{f}"' for f in FEATURES),
-        text=text[:MAX_TEXT], url=url or "(aucun)",
+        text=text[:MAX_TEXT], url=url or "(aucun)", today=date.today().strftime("%d.%m.%Y"),
     )
     return clean(await openrouter.achat_json(openrouter.text_message(prompt)))

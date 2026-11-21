@@ -69,6 +69,42 @@ local network. Current features:
    (« j'ai sorti le wetsuit du carton 2, prêté à Tom »). Both **ask for
    whatever is missing or ambiguous** — who it is for, the price, *which*
    pair of goggles — one question at a time. Setup doc: `TELEGRAM_BOT.md`.
+8. **Apartment search ("Logement")** — saved rental searches (zones —
+   cantons, communes, postcodes, « + N km » around a place — rent charges
+   included, rooms, surface, type, must-have equipment, words to include /
+   exclude, sites) checked on demand or by the scheduler (on/off, interval and
+   active hours per search). Sites read: three **portals** — Flatfox (public
+   API), Homegate · ImmoScout24 (through their sister sites home.ch /
+   immostreet.ch: the main sites block robots) and immobilier.ch — and ten
+   **régies** on their own websites — Naef, Bernard Nicod, Retraites
+   Populaires, Cogestim, Gérance Robert Crot, Gérance Borgeaud, MGM
+   Fiduciaire, Livit, Rosset, Publiaz immobilier (`app/housing/regies/`). The **same flat on several sites is
+   one card** with a link per site. Results go on a list and a swisstopo map
+   (pins clustered, rent tags when zoomed in); the household marks them seen
+   (automatic on opening), ⭐ favourite or ✕ not for us — shared by the whole
+   house. New results of automatic checks go to Telegram as one summary.
+   Ads no robot can read (Facebook, WhatsApp…) are **pasted**: the LLM fills
+   the form, the address is geocoded (api3.geo.admin.ch).
+
+9. **Finances / FIRE ("Finances")** — the road to financial independence for
+   the household (or each adult alone). Data lives in its **own gitignored
+   DB** `data/finance/finance.db` + `data/finance/docs/` (the repo is public);
+   move it with the encrypted backup (`POST /api/finance/backup/export`).
+   Engine in `app/finance/` (see its `__init__.py`): official 2026 federal +
+   Vaud tax scales (`params.py`, sources listed), AVS with 13th pension and
+   non-active contributions, LPP, 3a, capital-withdrawal tax, year-by-year
+   projection, FI-year solver, seeded Monte Carlo. Documents (CAMT.053, bank
+   CSV, broker CSV, PDF/photo via a **local-first LLM**, `app/llm.py`) go
+   upload → review → apply. Gamified: altitude, XP, badges, quests, monthly
+   check-in. Tests: `pip install -r requirements-dev.txt && pytest tests/finance`
+   (375 tests, incl. every row of the official IFD 2026 table). Key endpoints:
+   `GET /api/finance/overview?scope=household|member:<id>`, `/projection`,
+   `/montecarlo`, `/accounts`, `POST /checkin`, `POST /documents` (multipart
+   `files`) → `POST /documents/{id}/apply`, `/transactions`, `/budget`,
+   `/goals`, `/events`, `/scenarios/compare`, `POST /calc/tax`,
+   `GET /calc/capital-tax`, `GET /calc/avs`, `/calibration`, `POST /onboarding`.
+   Telegram: `/fire` (no amounts), monthly check-in reminder; prices/FX/CPI
+   refresh daily at 18:30. Full list at `/docs` (tag `finance`).
 
 The architecture is deliberately **agent-first**: everything the UI can do is
 exposed through a plain REST/JSON API, so agents can read and write all data
@@ -78,8 +114,12 @@ without touching the frontend or the database directly.
 
 - **Backend**: Python 3.10+, FastAPI, SQLite (stdlib `sqlite3`, no ORM)
 - **External data**: [TMDb](https://www.themoviedb.org/) (`app/tmdb.py`) for
-  the show tracker — search, trending, covers, synopsis, episode air dates
-- **Frontend**: vanilla HTML/CSS/JS in `static/` (no build step)
+  the show tracker — search, trending, covers, synopsis, episode air dates;
+  housing sites (`app/housing/`, see feature 8); the federal geocoder
+  `api3.geo.admin.ch` and swisstopo map tiles `wmts.geo.admin.ch` (free, no key)
+- **Frontend**: vanilla HTML/CSS/JS in `static/` (no build step). The only
+  libraries are vendored, not fetched from a CDN: Leaflet 1.9.4 and
+  Leaflet.markercluster 1.5.3 in `static/vendor/` (licences alongside)
 - **Server**: uvicorn, bound to `0.0.0.0` so LAN devices can reach it
 - **Database**: single file `data/dashboard.db`, **committed to the repo** so a
   `git pull` on another machine brings the data along. Never gitignore it.
@@ -126,9 +166,22 @@ app/
   database.py        SQLite connection + schema (init_db, additive migrations)
   telegram.py        generic Telegram module (send, commands, polling)
   bot.py             feature wiring (watering reminders, /plantes, /envies, /envie,
-                     /moi, /cartons, /ou, /sorti, /range, /series, natural-language
-                     wish capture + storage updates) + APScheduler cron
+                     /moi, /cartons, /ou, /sorti, /range, /series, /apparts,
+                     natural-language wish capture + storage updates) + APScheduler
+                     cron (the scheduler runs even without Telegram: housing checks)
   nlu.py             free-text Telegram message → structured wish / storage action
+  housing/           apartment search
+    places.py        Swiss postcodes/communes/cantons (swisstopo directory in
+                     ch_localities.csv): zone picker, zone matching, geocoding
+    http.py          polite HTTP client shared by the scrapers (1 req/s per site)
+    common.py        listing shape, feature catalog + keyword detection, RunContext
+    flatfox.py       Flatfox public API
+    homegate.py      Homegate/ImmoScout24 via home.ch (immostreet.ch as fallback)
+    immobilier.py    immobilier.ch results fragment (Suisse romande)
+    regies/          one module per régie site + common.py (net→gross detail reads)
+    engine.py        run a search: sources → filter → store → merge copies → Telegram;
+                     scheduler hook auto_run_check()
+    extract.py       pasted ad → fields (LLM)
   routers/
     plants.py        /api/plants*  (CRUD, /water, /due, /identify, photo, history)
     meals.py         /api/dishes*, /api/meal-plans* (grid entries, dish /photo + /identify)
@@ -138,9 +191,10 @@ app/
     storage.py       /api/storage* (boxes, items, search, /out → /in, /move, history)
     shows.py         /api/shows* (search, trending, calendar, CRUD, episode/season
                      watched, movie watched, refresh from TMDb)
+    housing.py       /api/housing* (searches, runs, listings, places, paste + extract)
 static/
-  index.html         SPA shell (7 views: Accueil / Plantes / Repas / Courses /
-                     Envies / Rangement / Séries)
+  index.html         SPA shell (8 views: Accueil / Plantes / Repas / Courses /
+                     Envies / Rangement / Séries / Logement)
                      Chaque carte d'accueil branchée au bot porte un « (i) »
                      qui explique ses commandes Telegram (HOME_HELP dans app.js)
                      The current view lives in the URL hash (#plants, #storage…),
@@ -150,6 +204,7 @@ static/
                      :root; notebook-specific touches sit at the end of the file.
                      Phones (≤ 760 px) get a bottom tab bar and bottom-sheet modals.
   app.js             all frontend logic, fetch-based
+  vendor/            Leaflet + Leaflet.markercluster (map of the Logement view)
 data/dashboard.db    SQLite data (committed, portable)
 data/photos/         plant, dish & wish photos (committed like the DB)
 .env                 OpenRouter API key (gitignored — see .env.example)
@@ -235,6 +290,19 @@ locally: `http://localhost:8000`.
 | Mark one episode watched/unwatched | `POST /api/shows/{id}/episodes/{episode_id}/watched` body `{"watched": true, "at"?}` |
 | Catch-up a whole season | `POST /api/shows/{id}/seasons/{season_number}/watched` |
 | Trigger the show sync + Telegram digest | `POST /api/bot/shows-check` (same logic as the daily 08:00 sync) |
+| **Housing** — sites, types, equipment, what is configured | `GET /api/housing/status` → `{sources[{key,label,group,…}], categories, features, elsewhere, telegram_configured, ai_configured, running, now}` |
+| Zone picker (cantons, communes, postcodes) | `GET /api/housing/places?q=pully` → `[{type, code, label, sublabel, canton, lat, lng}]` |
+| Saved searches (+ counts, last run, next auto run) | `GET` / `POST /api/housing/searches`, `GET` / `PUT` / `DELETE /api/housing/searches/{id}` |
+| Search body | `{"name", "criteria": {"zones": [{"type": "commune", "code": "5586"}, {"type": "radius", "code": "5590", "base": "commune", "km": 3}], "categories": ["apartment"], "price_min", "price_max", "rooms_min", "rooms_max", "surface_min", "surface_max", "features": ["balcony"], "keywords_include": [], "keywords_exclude": [], "sources": [...]}, "auto_run", "interval_minutes" (≥ 15), "notify", "active_from", "active_to"}` |
+| Check one search now (background) | `POST /api/housing/searches/{id}/run` → `202 {run_id}` — 409 if it already runs |
+| Check every search now | `POST /api/housing/run-all` → `202 {run_ids}` |
+| A check's live status / history | `GET /api/housing/runs/{run_id}` (per site: `state`, `found`, `matched`, `pages`, `requests`, `error`), `GET /api/housing/runs?search_id=` |
+| Listings (canonical, with all their sites) | `GET /api/housing/listings?search_id=&view=active\|new\|favorites\|dismissed&source=&sort=recent\|price_asc\|price_desc\|price_m2\|surface_desc\|rooms_desc&q=` → `{items, counts, total, now}` |
+| One listing (full text, photos, price history, searches) | `GET /api/housing/listings/{id}` |
+| ⭐ / ✕ / seen | `PUT /api/housing/listings/{id}` body `{"favorite"?, "dismissed"?, "seen"?}` — acts on the canonical row |
+| Mark seen in bulk | `POST /api/housing/listings/seen` body `{"ids": [...]}` or `{"search_id": n}` (neither = everything) |
+| Pasted ad → fields (LLM, nothing saved) | `POST /api/housing/extract` body `{"text", "url"}` |
+| Add an ad by hand (Facebook…) | `POST /api/housing/listings` body `{url, title, description, category, price, charges, rooms, surface, street, zipcode, city, …}` — geocoded, matched to every search, counts as seen; `DELETE` only for these |
 
 ### Conventions agents must know
 
@@ -398,7 +466,7 @@ locally: `http://localhost:8000`.
   app process, so it starts/stops with the container. Commands so far:
   `/plantes`, `/envies [prénom]`, `/envie <texte>`, `/moi <prénom>`,
   `/cartons [recherche]`, `/ou <objet>`, `/sortis`, `/sorti <texte>`,
-  `/range <texte>`, `/series`, `/help`. Setup: `TELEGRAM_BOT.md`.
+  `/range <texte>`, `/series`, `/apparts`, `/help`. Setup: `TELEGRAM_BOT.md`.
 - **Several text handlers can coexist**: `telegram.register_text_handler()`
   appends, and handlers are tried in registration order until one returns a
   reply — so each must return `None` for anything that is not its business.
@@ -407,6 +475,68 @@ locally: `http://localhost:8000`.
   everything else falls through to the wishlist. Both features share the
   per-chat `_pending` conversation slot, and each ignores a pending
   conversation whose `stage` is not its own.
+- **Housing: one row per site listing, one canonical row per flat.**
+  `housing_listings` is `UNIQUE (source, source_id)`; a copy of the same flat
+  on another site points at the first one through `duplicate_of`, and only the
+  canonical row carries the household state (`seen_at` — NULL = new —,
+  `favorite`, `dismissed`). Every read endpoint returns canonical rows with all
+  their `sources` (one link per site; a Homegate listing also gets its
+  ImmoScout24 link, same id). Same flat = same SMG id (Flatfox `smg_id` =
+  Homegate id), or across two different sites: same rooms, compatible rent
+  (charges included or net — see below), and positions within 80 m (surfaces
+  within 3 m² when both are known) or the same postcode + street number. The
+  closest twin wins, and a flat never gets two copies from the same site (two
+  similar units of one building stay apart). A copy nobody has touched yet is
+  re-checked at later runs (a régie card becomes comparable once its detail
+  page is read).
+- **Rents are charges included** (`price`), with `charges` when known: the
+  search budget, the cards and the alerts all speak gross rent, like the
+  portals. **Régie sites list net rents**, so a régie card that *could* match
+  (`regies.common.could_match`: net ≤ max budget, rooms, zone) gets its detail
+  page read once (charges, surface, floor, full text) — at most 40 per site
+  and check, the rest at the next check — and is stored; later checks reuse
+  the stored row unless the card's net rent changed. A stated « loyer total »
+  loses to net + charges (Borgeaud includes the parking places in it).
+  Livit, Rosset and Publiaz cards already give the rent charges included;
+  their detail page is still read once, for the text (and Livit's equipment
+  list, Publiaz's surface and street). Livit's list only filters on a circle
+  (≤ 40 km): the zones become one circle around them all, or one per zone.
+- **Missing data never rejects a listing** (`engine.evaluate`): no surface on a
+  card → kept, flagged `to_check: ["surface"]`. A must-have feature or an
+  include-keyword only rejects when the source gives the whole picture
+  (structured features or the full ad text — `FULL_TEXT`); otherwise the
+  listing stays with « à vérifier : ascenseur ». Feature words are detected in
+  FR/DE/EN/IT, and negations are honoured (« sans ascenseur » is no lift).
+- **First run = baseline.** A search's first check (and the first after its
+  criteria change — `PUT` resets `last_run_at` and drops the results that no
+  longer match) stores everything as unseen but announces nothing, so Telegram
+  never gets a 150-line message. Afterwards each new result is announced once
+  (`housing_matches.notified_at`), only by **automatic** checks — a check run
+  by hand is watched on screen — and never when already seen or set aside.
+- **Checks are incremental.** Sources read newest first and stop at the first
+  page with no id above the previous run's highest (`RunContext.watermark`,
+  stored per site in `housing_runs.details`): SMG and immobilier.ch ids only
+  grow. Flatfox returns everything at once and only new ids get their details.
+  A typical later check costs ~20 requests in total, 1 request/second per site.
+- **home.ch / immostreet.ch caveat**: their cache sometimes serves a page that
+  ignores the filters (right count, newest cards of the place) or a card with
+  an older price. The engine re-checks every card, so nothing wrong gets in; at
+  worst a listing shows up one check later (warning in the run details).
+- **Régies without a feed of their own** — Chamot & Cie (its page embeds
+  immobilier.ch), Roland Savary (immobilier.ch + Homegate), Wincasa and
+  Apleona (a Homegate widget), Régie Duboux (sales only on its site) — come
+  through the portals, agency named on the card (`regies.ELSEWHERE`). Service Immobilier
+  Vaudois is a paid search service with no public list. A régie module
+  declares `GROUP = "regie"` and the `CANTONS` it covers: a search elsewhere
+  costs it no request.
+- **The scheduler always runs** (`bot.start`), Telegram or not: every 10 min
+  `housing.engine.auto_run_check` runs the searches whose interval elapsed,
+  inside their active hours (`TELEGRAM_TZ`); a machine that slept catches up
+  at the next tick. Runs are serialised (one at a time) and their sources run
+  in parallel threads; a run's live state is `GET /api/housing/runs/{id}`.
+- **Timestamps** stay server-local like everywhere else; the housing list
+  endpoints add `now` (server clock) so the UI computes « il y a 12 min »
+  correctly when the container runs on UTC.
 
 ## Coding conventions
 

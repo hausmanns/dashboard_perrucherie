@@ -62,12 +62,20 @@ _FEATURE_RES = {
     key: re.compile(r"\b(?:" + "|".join(re.escape(normalize(w)) for w in words) + r")\b")
     for key, (_, words) in FEATURES.items()
 }
+# « sans ascenseur », « pas de balcon », « ohne Lift », « no parking »: the word is there, the feature isn't.
+_NEGATION = re.compile(r"\b(?:sans|pas de|pas d|aucun|aucune|ni|ohne|kein|keine|keinen|no|without|senza)\s+(?:\w+\s+){0,2}$")
 
 
 def detect_features(text: str) -> set[str]:
-    """Feature keys whose words appear in `text` (title + description)."""
+    """Feature keys whose words appear in `text` (title + description), unless negated."""
     key = normalize(text)
-    return {f for f, rx in _FEATURE_RES.items() if rx.search(key)}
+    found = set()
+    for feature, rx in _FEATURE_RES.items():
+        for m in rx.finditer(key):
+            if not _NEGATION.search(key[max(0, m.start() - 30):m.start()]):
+                found.add(feature)
+                break
+    return found
 
 
 def has_words(text: str, words: list[str]) -> bool:
@@ -158,6 +166,14 @@ class RunContext:
     known_rows: Callable[[list], dict] = lambda ids: {}
     progress: Callable[..., None] = lambda **kw: None
     warnings: list = field(default_factory=list)
+    seen_max: Optional[int] = None   # highest numeric id on any card read, kept or not
+
+    def note_ids(self, ids) -> None:
+        """Remember the newest id seen, including cards dropped before the detail
+        step — the next run's watermark must cover them, or it keeps paging."""
+        nums = [int(i) for i in ids if str(i).isdigit()]
+        if nums:
+            self.seen_max = max(nums + ([self.seen_max] if self.seen_max is not None else []))
 
     def caught_up(self, ids: list[str]) -> bool:
         """True when a newest-first page holds nothing newer than last time."""

@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from .. import telegram
 from ..config import OPENROUTER_API_KEY
 from ..database import get_conn, rows_to_dicts
-from ..housing import engine, extract as extractor, places
+from ..housing import engine, extract as extractor, places, regies
 from ..housing.common import CATEGORIES, FEATURES, detect_features, listing as make_listing
 from ..openrouter import LLMError
 
@@ -264,8 +264,10 @@ def _canonical_row(conn, listing_id: int) -> dict:
 def status():
     """Sites, types, features and what is configured — the frontend builds its forms from this."""
     return {
-        "sources": [{"key": k, "label": m.LABEL, "color": m.COLOR, "note": m.NOTE}
-                    for k, m in engine.SOURCES.items()],
+        "sources": [{"key": k, "label": m.LABEL, "color": m.COLOR, "note": m.NOTE,
+                     "group": getattr(m, "GROUP", "portal")} for k, m in engine.SOURCES.items()],
+        "elsewhere": regies.ELSEWHERE,   # régies whose ads come through the portals
+
         "categories": [{"key": k, "label": v[0], "emoji": v[1]} for k, v in CATEGORIES.items()],
         "features": [{"key": k, "label": v[0]} for k, v in FEATURES.items()],
         "telegram_configured": telegram.is_configured(),

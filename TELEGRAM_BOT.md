@@ -100,7 +100,18 @@ Deux cas :
   « /sorti le wetsuit long du carton 2, prêté à Tom ». La date est estampillée
   toute seule.
 - `/range <texte libre>` — l'inverse : « /range le stéthoscope ».
+- `/apparts` — la recherche d'appartement : chaque recherche avec ses
+  nouvelles annonces, les dernières trouvailles et les favoris.
 - `/help` — liste des commandes
+
+### Alertes de la recherche d'appartement
+
+Une recherche dont la **vérification automatique** est activée (onglet
+Logement) envoie un résumé des nouvelles annonces après chaque passage :
+loyer charges comprises, pièces, m², lieu et lien — une ligne par annonce,
+jamais deux fois la même, rien quand il n'y a rien de nouveau. Une
+vérification lancée à la main n'envoie rien (le résultat est à l'écran), et
+le tout premier passage d'une recherche non plus (il sert de référence).
 
 ### En message privé, la commande est facultative
 

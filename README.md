@@ -15,6 +15,15 @@ Dashboard de gestion de la maison, auto-hébergé sur votre réseau local :
   destinataire ne voit ni qui a réservé, ni ce qui est déjà acheté.
   Une envie s'ajoute aussi **depuis Telegram en langage naturel** :
   « /envie un casque Sony vers 350.- pour Lea » — le bot demande ce qui manque.
+- 🏠 **Logement** — des recherches d'appartement enregistrées (communes, NPA,
+  cantons ou rayon autour d'un lieu, loyer charges comprises, pièces, surface,
+  équipements indispensables, mots-clés), vérifiées à la demande ou toutes
+  seules, sur Flatfox, Homegate · ImmoScout24, immobilier.ch et dix régies
+  (Naef, Bernard Nicod, Retraites Populaires, Cogestim, Robert Crot, Borgeaud,
+  MGM, Livit, Rosset, Publiaz). Un même appartement vu sur plusieurs sites n'apparaît qu'une
+  fois, avec un lien par site. Liste + carte suisse, nouvelles annonces en
+  jaune, ⭐ favoris, ✕ écartées ; résumé Telegram des nouveautés. Une annonce
+  Facebook ou WhatsApp se colle : l'IA remplit la fiche.
 
 Pensé « agent-first » : toutes les données sont lisibles et modifiables via une
 API REST documentée (voir `AGENTS.md` et `/docs`).
@@ -52,6 +61,10 @@ API doc: http://192.168.x.x:8000/docs
 ```
 
 Ouvrez l'URL « Réseau » depuis n'importe quel appareil connecté au même Wi-Fi.
+
+Plus simple : utilisez le nom de la machine, qui ne change pas même quand
+l'IP change (attribuée par le routeur) : **http://sebhp.local:8000**
+(Android ne résout pas toujours les noms `.local` ; dans ce cas, utilisez l'IP.)
 
 ## Déplacer sur une autre machine
 

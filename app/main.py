@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from .database import BASE_DIR, get_conn, init_db
 from . import bot
 from .housing import engine as housing_engine
-from .routers import grocery, housing, meals, plants, shows, storage, wishlist
+from .finance import db as finance_db
+from .routers import finance, grocery, housing, meals, plants, shows, storage, wishlist
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -25,6 +26,7 @@ app = FastAPI(
     title="Dashboard de la Perrucherie",
     description=(
         "Dashboard de gestion de la maison : suivi des plantes (arrosage, rappels), "
+        "finances et indépendance financière (FIRE), "
         "planification des repas (meal prep), listes d'envies/cadeaux, inventaire "
         "des cartons de rangement, suivi des séries/films (TMDb) et recherche "
         "d'appartement (Flatfox, Homegate/ImmoScout24, immobilier.ch). API REST "
@@ -40,13 +42,16 @@ app.include_router(wishlist.router)
 app.include_router(storage.router)
 app.include_router(shows.router)
 app.include_router(housing.router)
+app.include_router(finance.router)
 app.include_router(bot.router)
 
 
 @app.on_event("startup")
 async def startup() -> None:
     init_db()
+    finance_db.init_db()
     housing_engine.recover_interrupted_runs()
+    housing_engine.merge_cogestim_reposts()
     bot.start()
 
 
@@ -141,6 +146,7 @@ def summary():
             "upcoming_birthdays": upcoming_birthdays,
         },
         "housing": housing.summary(),            # recherche d'appartement
+        "finance": _finance_summary(),           # FIRE : altitude, année de liberté, quêtes
         "shows": {
             "total": len(all_shows),
             "watching": len(watching_shows),
@@ -148,6 +154,13 @@ def summary():
             "new_episodes": new_episode_shows,   # diffusés, pas encore vus
         },
     }
+
+
+def _finance_summary() -> dict:
+    try:
+        return finance.summary()
+    except Exception as e:  # noqa: BLE001 — the overview must never fail because of one block
+        return {"error": str(e)}
 
 
 # ---- Static frontend (must be mounted last) ----

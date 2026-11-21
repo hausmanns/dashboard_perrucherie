@@ -34,13 +34,13 @@ from zoneinfo import ZoneInfo
 from .. import telegram
 from ..config import TELEGRAM_TZ
 from ..database import get_conn, rows_to_dicts
-from . import flatfox, homegate, immobilier, places
+from . import flatfox, homegate, immobilier, places, regies
 from .common import CATEGORIES, FEATURES, RunContext, detect_features, has_words
 from .http import SourceError
 
 logger = logging.getLogger(__name__)
 
-SOURCES = {m.KEY: m for m in (flatfox, homegate, immobilier)}
+SOURCES = {m.KEY: m for m in (flatfox, homegate, immobilier, *regies.SOURCES)}
 FIRST_RUN_PAGES = 10       # per location and source, on a baseline run
 INCREMENTAL_PAGES = 4      # later runs usually stop after page 1 (see RunContext.caught_up)
 AUTO_SLACK = timedelta(minutes=5)   # the auto check ticks every 10 min
@@ -224,9 +224,67 @@ def upsert_listing(conn, item: dict, now: str) -> tuple[int, bool]:
     return row["id"], False
 
 
+STREET_ABBREV = {"av": "avenue", "ave": "avenue", "ch": "chemin", "che": "chemin", "rte": "route",
+                 "bd": "boulevard", "pl": "place", "r": "rue", "imp": "impasse", "st": "saint", "ste": "sainte"}
+STREET_STOP = {"de", "du", "des", "la", "le", "les", "l", "d"}
+
+
+def street_key(street: str) -> tuple | None:
+    """« Av. de la Gare 12b, Pully » and « Avenue de la Gare 12B » → ("avenue gare", "12b")."""
+    words = [STREET_ABBREV.get(w, w) for w in places.normalize((street or "").split(",")[0]).split()]
+    number = next((w for w in reversed(words) if w[:1].isdigit()), None)
+    name = [w for w in words if w not in STREET_STOP and not w[:1].isdigit()]
+    return (" ".join(name), number) if name and number else None
+
+
+def _rents(price, charges) -> set:
+    """The rents a listing may be quoted at: charges included, and net when the charges are known."""
+    out = {price} if price else set()
+    if price and charges and price > charges:
+        out.add(price - charges)
+    return out
+
+
+def _rent_gap(a: dict, b: dict) -> tuple:
+    """How close two rents are, for picking the best twin: the stated rents first
+    (two flats of one building often share a net rent and differ by their
+    charges), then the closest of the net/gross variants."""
+    pa, pb = a.get("price"), b.get("price")
+    stated = abs(pa - pb) / max(pa, pb) if pa and pb else 1.0
+    gaps = [abs(x - y) / max(x, y) for x in _rents(pa, a.get("charges")) for y in _rents(pb, b.get("charges"))]
+    return (stated, min(gaps) if gaps else 1.0)
+
+
+def _same_rent(a: dict, b: dict, tolerance: float) -> bool:
+    for x in _rents(a.get("price"), a.get("charges")):
+        for y in _rents(b.get("price"), b.get("charges")):
+            if abs(x - y) <= max(20, tolerance * max(x, y)):
+                return True
+    return False
+
+
+def _same_size(a: dict, b: dict, margin: int = 3) -> bool:
+    return not (a.get("surface") and b.get("surface")) or abs(a["surface"] - b["surface"]) <= margin
+
+
+def _has_copy_from(conn, canon_id: int, source: str) -> bool:
+    """Does this flat already have a copy on `source`? Then a second listing of
+    that same site is another flat (two similar units of one building)."""
+    return conn.execute(
+        "SELECT 1 FROM housing_listings WHERE (id = ? OR duplicate_of = ?) AND source = ? LIMIT 1",
+        (canon_id, canon_id, source)).fetchone() is not None
+
+
 def _canonical(conn, listing_id: int, item: dict) -> int:
     """Merge a newly stored listing into an older copy of the same flat on
-    another site, and return the id that carries the household's state."""
+    another site, and return the id that carries the household's state.
+
+    Same flat = same SMG id (Flatfox ↔ Homegate), or, across sites, the same
+    rooms and a compatible rent (charges included or net — régies quote net)
+    with either positions within 80 m (and surfaces within 3 m² when both are
+    known), or the same postcode and street number when a position is
+    missing. Two identical flats of one building on two sites could in theory
+    be merged; two copies of one flat staying apart is the more common risk."""
     canon = None
     if item.get("smg_id"):
         other = conn.execute(
@@ -235,26 +293,63 @@ def _canonical(conn, listing_id: int, item: dict) -> int:
         ).fetchone()
         if other:
             canon = other["duplicate_of"] or other["id"]
-    lat, lng, price, rooms = item.get("lat"), item.get("lng"), item.get("price"), item.get("rooms")
-    if canon is None and None not in (lat, lng, price, rooms) and item.get("geo_precision") == "exact":
+    lat, lng, rooms = item.get("lat"), item.get("lng"), item.get("rooms")
+    best = None  # (rent gap, distance, canonical id): the closest twin wins, not the first one found
+    if canon is None and None not in (lat, lng, rooms) and item.get("price") and item.get("geo_precision") == "exact":
         d = 0.0012  # ≈ 100 m box, refined with the real distance below
         for c in conn.execute(
-            """SELECT id, duplicate_of, lat, lng, surface FROM housing_listings
+            """SELECT id, duplicate_of, lat, lng, surface, price, charges FROM housing_listings
                WHERE id != ? AND source != ? AND geo_precision = 'exact' AND rooms = ?
-                 AND price BETWEEN ? AND ? AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?
-               ORDER BY id""",
-            (listing_id, item["source"], rooms, price * (1 - DUP_PRICE_TOLERANCE),
-             price * (1 + DUP_PRICE_TOLERANCE), lat - d, lat + d, lng - d, lng + d),
+                 AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?""",
+            (listing_id, item["source"], rooms, lat - d, lat + d, lng - d, lng + d),
         ).fetchall():
-            same_size = not (c["surface"] and item.get("surface")) or abs(c["surface"] - item["surface"]) <= 3
-            if same_size and places.haversine_km(lat, lng, c["lat"], c["lng"]) <= DUP_DISTANCE_KM:
-                canon = c["duplicate_of"] or c["id"]
-                break
+            c = dict(c)
+            # A net rent with unknown charges vs a gross one: equal surfaces vouch for the gap.
+            sized = bool(item.get("surface") and c["surface"]) and _same_size(item, c)
+            loose = sized and (item.get("charges") is None or c["charges"] is None)
+            distance = places.haversine_km(lat, lng, c["lat"], c["lng"])
+            target = c["duplicate_of"] or c["id"]
+            if (_same_size(item, c) and _same_rent(item, c, 0.2 if loose else DUP_PRICE_TOLERANCE)
+                    and distance <= DUP_DISTANCE_KM and not _has_copy_from(conn, target, item["source"])):
+                cand = (_rent_gap(item, c), distance, target)
+                best = min(best, cand) if best else cand
+    key = street_key(item.get("street") or "")
+    if canon is None and best is None and key and rooms is not None and item.get("zipcode") and item.get("price"):
+        for c in conn.execute(
+            """SELECT id, duplicate_of, street, surface, price, charges FROM housing_listings
+               WHERE id != ? AND source != ? AND zipcode = ? AND rooms = ?""",
+            (listing_id, item["source"], str(item["zipcode"]), rooms),
+        ).fetchall():
+            c = dict(c)
+            target = c["duplicate_of"] or c["id"]
+            # Same address and rooms is strong already: allow the gap between a net and a gross rent.
+            if (street_key(c["street"]) == key and _same_size(item, c, 5) and _same_rent(item, c, 0.2)
+                    and not _has_copy_from(conn, target, item["source"])):
+                cand = (_rent_gap(item, c), 0.0, target)
+                best = min(best, cand) if best else cand
+    if canon is None and best:
+        canon = best[2]
     if canon and canon != listing_id:
         conn.execute("UPDATE housing_listings SET duplicate_of = ? WHERE id = ?", (canon, listing_id))
         conn.execute("UPDATE OR IGNORE housing_matches SET listing_id = ? WHERE listing_id = ?", (canon, listing_id))
         conn.execute("DELETE FROM housing_matches WHERE listing_id = ?", (listing_id,))
         return canon
+    return listing_id
+
+
+def _recheck(conn, listing_id: int, item: dict) -> int:
+    """The canonical id of an already stored listing. One the household never
+    touched (unseen, no star, nothing merged into it) gets another chance to
+    find its twin: a régie card first stored at its net rent only becomes
+    comparable once its detail page has been read."""
+    row = conn.execute("SELECT duplicate_of, favorite, dismissed, seen_at FROM housing_listings WHERE id = ?",
+                       (listing_id,)).fetchone()
+    if row["duplicate_of"]:
+        return row["duplicate_of"]
+    untouched = not (row["favorite"] or row["dismissed"] or row["seen_at"])
+    if untouched and not conn.execute("SELECT 1 FROM housing_listings WHERE duplicate_of = ? LIMIT 1",
+                                      (listing_id,)).fetchone():
+        return _canonical(conn, listing_id, item)
     return listing_id
 
 
@@ -269,6 +364,51 @@ def prune_orphans(conn) -> int:
                  (SELECT id FROM housing_listings WHERE favorite = 1 OR source = 'manual')"""
     )
     return cur.rowcount
+
+
+def merge_cogestim_reposts() -> int:
+    """Cogestim listings were once keyed by an object number the site changes
+    at each re-import, so one flat piled up as several rows and came back as
+    new after being dismissed. Re-key them by their link (`cogestim.stable_id`)
+    and fold each flat's rows into one: the latest data, the first sighting,
+    and the household's state of all of them (dismissed once stays dismissed).
+    A Cogestim office or parking that slipped in as a flat loses its results.
+    Runs at startup; a no-op once done. Returns how many rows were folded."""
+    cogestim = SOURCES["cogestim"]
+    with get_conn() as conn:
+        groups: dict[str, list[dict]] = {}
+        for r in conn.execute("SELECT * FROM housing_listings WHERE source = 'cogestim' ORDER BY id").fetchall():
+            groups.setdefault(cogestim.stable_id(r["url"]) or r["source_id"], []).append(dict(r))
+        folded = 0
+        for key, rows in groups.items():
+            if len(rows) == 1 and rows[0]["source_id"] == key:
+                continue
+            keeper, others = rows[-1], rows[:-1]
+            canon = next((r["duplicate_of"] for r in reversed(rows) if r["duplicate_of"]), None) or keeper["id"]
+            seen = [r["seen_at"] for r in rows if r["seen_at"]]
+            for r in others:
+                conn.execute("UPDATE OR IGNORE housing_matches SET listing_id = ? WHERE listing_id = ?", (canon, r["id"]))
+                conn.execute("UPDATE housing_listings SET duplicate_of = ? WHERE duplicate_of = ?", (canon, r["id"]))
+                conn.execute("DELETE FROM housing_listings WHERE id = ?", (r["id"],))
+            conn.execute(
+                "UPDATE housing_listings SET source_id = ?, duplicate_of = ?, first_seen_at = ? WHERE id = ?",
+                (key, canon if canon != keeper["id"] else None, min(r["first_seen_at"] for r in rows), keeper["id"]))
+            if canon != keeper["id"]:
+                conn.execute("UPDATE OR IGNORE housing_matches SET listing_id = ? WHERE listing_id = ?",
+                             (canon, keeper["id"]))
+                conn.execute("DELETE FROM housing_matches WHERE listing_id = ?", (keeper["id"],))
+            conn.execute(
+                """UPDATE housing_listings SET favorite = MAX(favorite, ?), dismissed = MAX(dismissed, ?),
+                          seen_at = COALESCE(seen_at, ?) WHERE id = ?""",
+                (max(r["favorite"] for r in rows), max(r["dismissed"] for r in rows), min(seen, default=None), canon))
+            if canon == keeper["id"] and not cogestim.is_living(keeper["url"]):
+                conn.execute("UPDATE housing_listings SET category = 'other' WHERE id = ?", (canon,))
+                conn.execute("DELETE FROM housing_matches WHERE listing_id = ?", (canon,))
+            folded += len(others)
+        if folded:
+            prune_orphans(conn)
+            logger.info("Cogestim: %d re-posted listing row(s) folded into their flat", folded)
+        return folded
 
 
 def reevaluate_matches(search_id: int) -> int:
@@ -431,7 +571,7 @@ def _run(run_id: int, live: dict) -> None:
         try:
             items = src.search(crit, zones, ctx)
             ids = [int(i["source_id"]) for i in items if str(i["source_id"]).isdigit()]
-            stat["max_id"] = max(ids + [watermarks.get(key) or 0]) or None
+            stat["max_id"] = max(ids + [watermarks.get(key) or 0, ctx.seen_max or 0]) or None
             stat["state"] = "done"
             return items
         except SourceError as e:
@@ -456,9 +596,7 @@ def _run(run_id: int, live: dict) -> None:
                     continue
                 stat["matched"] += 1
                 listing_id, created = upsert_listing(conn, item, now)
-                canon = _canonical(conn, listing_id, item) if created else (
-                    conn.execute("SELECT COALESCE(duplicate_of, id) FROM housing_listings WHERE id = ?",
-                                 (listing_id,)).fetchone()[0])
+                canon = _canonical(conn, listing_id, item) if created else _recheck(conn, listing_id, item)
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO housing_matches (search_id, listing_id, matched_at, notified_at) VALUES (?, ?, ?, ?)",
                     (search["id"], canon, now, now if baseline else None),

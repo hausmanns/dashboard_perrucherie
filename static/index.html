@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="/static/vendor/leaflet.markercluster/MarkerCluster.css" />
   <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/finance.css" />
   <meta name="theme-color" content="#fbf7ee" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦜</text></svg>" />
 </head>
@@ -24,6 +25,7 @@
     <symbol id="i-box" viewBox="0 0 24 24"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.7 4.73a2 2 0 0 0 2 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/></symbol>
     <symbol id="i-tv" viewBox="0 0 24 24"><rect width="20" height="15" x="2" y="7" rx="2"/><path d="m17 2-5 5-5-5"/></symbol>
     <symbol id="i-building" viewBox="0 0 24 24"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></symbol>
+    <symbol id="i-mountain" viewBox="0 0 24 24"><path d="m8 3 4 8 5-5 5 15H2L8 3z"/><path d="m4.14 15.08 2.86-1.08 3 2 3-1"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/></symbol>
   </svg>
 
@@ -44,6 +46,7 @@
       <button class="tab" data-view="storage"><svg class="ico"><use href="#i-box"/></svg><span class="tab-lbl">Rangement</span><span id="storage-badge" class="badge hidden"></span></button>
       <button class="tab" data-view="shows"><svg class="ico"><use href="#i-tv"/></svg><span class="tab-lbl">Séries</span><span id="shows-badge" class="badge hidden"></span></button>
       <button class="tab" data-view="housing"><svg class="ico"><use href="#i-building"/></svg><span class="tab-lbl">Logement</span><span id="housing-badge" class="badge hidden"></span></button>
+      <button class="tab" data-view="finance"><svg class="ico"><use href="#i-mountain"/></svg><span class="tab-lbl">Finances</span><span id="finance-badge" class="badge hidden"></span></button>
     </nav>
     <button id="notif-btn" class="btn btn-ghost" title="Activer les notifications d'arrosage" aria-label="Activer les notifications d'arrosage"><svg class="ico"><use href="#i-bell"/></svg></button>
   </header>
@@ -81,6 +84,11 @@
           <h2>🏠 Appartements<button class="info-btn" data-help="housing" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
           <div class="card-help hidden" id="help-housing"></div>
           <div id="home-housing" class="home-list"><p class="muted">Chargement…</p></div>
+        </div>
+        <div class="card home-card" data-sec="finance">
+          <h2>🏔️ Liberté financière<button class="info-btn" data-help="finance" aria-expanded="false" title="Comment s'en servir depuis Telegram">i</button></h2>
+          <div class="card-help hidden" id="help-finance"></div>
+          <div id="home-finance" class="home-list"><p class="muted">Chargement…</p></div>
         </div>
         <div class="card home-card" data-sec="stats">
           <h2>📊 En bref</h2>
@@ -283,9 +291,9 @@
       <div class="section-head">
         <h2>Trouver un appart</h2>
         <div class="plan-actions">
-          <button class="btn btn-ghost" id="hs-paste-btn" title="Une annonce vue sur Facebook, WhatsApp, le site d'une régie…">📋 Coller une annonce</button>
+          <button class="btn btn-ghost" id="hs-paste-btn" title="Une annonce vue sur Facebook, WhatsApp, le site d'une régie…">📋 Coller<span class="hs-long">&nbsp;une annonce</span></button>
           <button class="btn btn-ghost" id="hs-run-all-btn" title="Vérifier toutes les recherches maintenant">Tout vérifier</button>
-          <button class="btn btn-primary" id="hs-new-search-btn">+ Nouvelle recherche</button>
+          <button class="btn btn-primary" id="hs-new-search-btn">+<span class="hs-long">&nbsp;Nouvelle</span>&nbsp;recherche</button>
         </div>
       </div>
 
@@ -320,6 +328,26 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ================= FINANCES / FIRE ================= -->
+    <section id="view-finance" class="view">
+      <div class="section-head fin-head">
+        <div>
+          <h2 id="fin-title">Le chemin de la liberté</h2>
+          <p class="muted fin-sub" id="fin-subtitle">Finances du foyer · indépendance financière</p>
+        </div>
+        <div class="plan-actions fin-actions">
+          <div class="seg" id="fin-scope" role="tablist" aria-label="Qui"></div>
+          <button class="btn btn-ghost" id="fin-drop-btn" title="Fiches de salaire, relevés, certificats, décisions de taxation…">📎<span class="fin-long">&nbsp;Déposer</span></button>
+          <button class="btn btn-primary" id="fin-checkin-btn">📒<span class="fin-long">&nbsp;Point du mois</span></button>
+        </div>
+      </div>
+      <nav class="chip-row fin-tabs" id="fin-tabs" aria-label="Rubriques"></nav>
+      <input type="file" id="fin-file-input" multiple hidden
+             accept=".xml,.csv,.txt,.tsv,.xlsx,.pdf,.png,.jpg,.jpeg,.webp,.camt,.053" />
+      <div id="fin-body" class="fin-body"><p class="muted">Chargement…</p></div>
+      <div id="fin-dropzone" class="fin-dropzone hidden" aria-hidden="true"><div>📎 Lâchez vos documents ici</div></div>
     </section>
   </main>
 
@@ -578,7 +606,7 @@
   <!-- ================= MODALE RECHERCHE D'APPART ================= -->
   <dialog id="hs-search-modal" class="modal hs-modal">
     <form method="dialog" id="hs-search-form" autocomplete="off">
-      <h3 id="hs-search-title">Nouvelle recherche</h3>
+      <h3 id="hs-search-title" tabindex="-1" autofocus>Nouvelle recherche</h3>
       <input type="hidden" id="hs-search-id" />
       <label>Nom<input id="hs-name" placeholder="3.5 pièces à Lausanne" maxlength="80" /></label>
 
@@ -713,9 +741,15 @@
     <div id="hs-listing-body"></div>
   </dialog>
 
+
+  <!-- ================= FINANCES : modale générique & assistant ================= -->
+  <dialog id="fin-modal" class="modal fin-modal"><div id="fin-modal-body"></div></dialog>
+  <dialog id="fin-wizard" class="modal fin-wizard"><div id="fin-wizard-body"></div></dialog>
   <div id="toast" class="toast hidden"></div>
   <script src="/static/vendor/leaflet/leaflet.js"></script>
   <script src="/static/vendor/leaflet.markercluster/leaflet.markercluster.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/finance-charts.js"></script>
+  <script src="/static/finance.js"></script>
 </body>
 </html>

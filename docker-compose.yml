@@ -30,4 +30,16 @@ services:
       # Show tracker (search, trending, covers, episodes) — TMDb API key
       # (the short v3 "API Key", not the "API Read Access Token" JWT).
       - TMDB_API_KEY=${TMDB_API_KEY:-}
+      # Finances: documents (payslips, statements, tax bills) are read by a
+      # LOCAL model first — any OpenAI-compatible server (Ollama, LM Studio…).
+      # Default: Ollama on this machine, reached through host.docker.internal.
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-}
+      - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-}
+      - LOCAL_LLM_API_KEY=${LOCAL_LLM_API_KEY:-}
+      - LLM_MODE=${LLM_MODE:-}
+      - RUNNING_IN_DOCKER=1
+    extra_hosts:
+      # lets the container reach Ollama on the host (Linux needs this line;
+      # Docker Desktop on Windows/macOS knows the name already)
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped

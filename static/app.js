@@ -88,6 +88,7 @@ function showView(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   window.scrollTo(0, 0);
   if (view === "housing" && hsBooted) hsOnShow(); // la carte ne se dessine qu'une fois visible
+  if (view === "finance" && typeof finOnShow === "function") finOnShow();
 }
 
 document.querySelectorAll(".tab").forEach((tab) =>
@@ -140,6 +141,7 @@ async function loadHome() {
     renderHello(s);
     hsSkewFrom(s.generated_at);
     hsRenderHomeCard(s.housing);
+    if (typeof finRenderHomeCard === "function") finRenderHomeCard(s.finance);
 
     const dueBox = $("#home-due-plants");
     if (s.plants.due.length === 0) {
@@ -2383,7 +2385,11 @@ const hsState = {
 /* ---- Petits outils ---- */
 
 const hsChf = (n) => (n == null ? "?" : String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "'"));
-const hsPrice = (l) => (l.price ? `${hsChf(l.price)}.–` : "Prix ?");
+const hsPrice = (l) => (l.price ? `${hsChf(l.price)}.–` : "Loyer sur demande");
+// Le loyer en grand, « /mois » en petit — ou « Loyer sur demande » quand la régie ne le publie pas.
+const hsPriceHtml = (l, extra = "") => (l.price
+  ? `${hsPrice(l)}<small>/mois${extra}</small>`
+  : `<span class="hs-noprice">Loyer sur demande</span>`);
 const hsListing = (id) => hsState.listings.find((l) => l.id === id);
 const hsShortLabel = (label) => String(label || "").replace(" · ImmoScout24", "");
 
@@ -2619,7 +2625,12 @@ $("#hs-pane-switch").addEventListener("click", (e) => {
   hsState.pane = btn.dataset.pane;
   document.querySelectorAll("#hs-pane-switch .seg-btn").forEach((b) => b.classList.toggle("active", b === btn));
   $("#hs-split").dataset.pane = hsState.pane;
-  if (hsState.pane === "map") hsOnShow();
+  if (hsState.pane === "map") {
+    // La carte vient se placer en haut de l'écran, puis se cadre sur ce qui est visible.
+    $("#hs-split").scrollIntoView({ block: "start" });
+    hsState.fitPending = true;
+    hsOnShow();
+  }
 });
 
 $("#hs-new-search-btn").addEventListener("click", () => hsOpenSearchModal());
@@ -2686,6 +2697,9 @@ function hsItemHtml(l) {
     : `<span class="hs-thumb">🏢</span>`;
   const tags = l.sources.filter((s) => s.source !== "immoscout24")
     .map((s) => `<span class="hs-src" style="--src:${s.color}">${esc(hsShortLabel(s.label))}</span>`);
+  // Une annonce de portail dit quelle régie la gère (Chamot, Savary… n'ont pas d'autre vitrine).
+  const regies = new Set((hsState.meta.sources || []).filter((s) => s.group === "regie").map((s) => s.key));
+  if (l.agency && !l.sources.some((s) => regies.has(s.source))) tags.push(`<span class="hs-agency">${esc(l.agency)}</span>`);
   if (l.price_change) {
     tags.push(l.price_change < 0
       ? `<span class="hs-drop">↓ ${hsChf(-l.price_change)}.– de baisse</span>`
@@ -2700,7 +2714,7 @@ function hsItemHtml(l) {
       ${thumb}
       <div class="hs-body">
         <div class="hs-price-row">
-          <span class="hs-price">${hsPrice(l)}<small>/mois</small></span>
+          <span class="hs-price">${hsPriceHtml(l)}</span>
           ${l.is_new ? `<span class="sr-only">Nouvelle annonce.</span>` : ""}
         </div>
         ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
@@ -2767,12 +2781,18 @@ function hsInitMap() {
   const el = $("#hs-map");
   if (!el.offsetWidth) return; // carte cachée (onglet ou volet « Liste ») : on attend qu'elle soit visible
   const map = L.map(el, { minZoom: 6, maxZoom: 19, zoomControl: true }).setView([46.8, 8.2], 8);
-  const swiss = (layer) => L.tileLayer(
-    `https://wmts.geo.admin.ch/1.0.0/${layer}/default/current/3857/{z}/{x}/{y}.jpeg`,
-    { maxNativeZoom: 18, maxZoom: 19,
+  map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
+  const swiss = (layer, ext = "jpeg", extra = {}) => L.tileLayer(
+    `https://wmts.geo.admin.ch/1.0.0/${layer}/default/current/3857/{z}/{x}/{y}.${ext}`,
+    { maxNativeZoom: 18, maxZoom: 19, ...extra,
       attribution: '© <a href="https://www.swisstopo.admin.ch/fr/" target="_blank" rel="noopener">swisstopo</a>' });
   const bases = {
-    "Carte grise": swiss("ch.swisstopo.pixelkarte-grau"),
+    // De près, la carte grise noircit les quartiers (bâtiments pleins) : la carte au 1:10'000,
+    // bien plus claire, prend le relais là où les étiquettes de loyer apparaissent.
+    "Carte grise": L.layerGroup([
+      swiss("ch.swisstopo.pixelkarte-grau", "jpeg", { maxZoom: HS_TAG_ZOOM }),
+      swiss("ch.swisstopo.landeskarte-grau-10", "png", { minZoom: HS_TAG_ZOOM + 1 }),
+    ]),
     "Carte en couleurs": swiss("ch.swisstopo.pixelkarte-farbe"),
     "Photo aérienne": swiss("ch.swisstopo.swissimage"),
     "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -2782,7 +2802,12 @@ function hsInitMap() {
   try { if (localStorage.getItem("hsBase") in bases) chosen = localStorage.getItem("hsBase"); } catch { /* défaut */ }
   bases[chosen].addTo(map);
   L.control.layers(bases, null, { position: "topright" }).addTo(map);
-  map.on("baselayerchange", (e) => { try { localStorage.setItem("hsBase", e.name); } catch { /* défaut */ } });
+  // La carte grise est adoucie (CSS) pour que les épingles ressortent sur le crayonné.
+  el.classList.toggle("is-soft", chosen === "Carte grise");
+  map.on("baselayerchange", (e) => {
+    el.classList.toggle("is-soft", e.name === "Carte grise");
+    try { localStorage.setItem("hsBase", e.name); } catch { /* défaut */ }
+  });
   map.on("zoomend", hsRefreshIcons);
   hsState.zones = L.layerGroup().addTo(map);
   // Deux cents annonces dans une ville se recouvrent : on les regroupe jusqu'au zoom de quartier.
@@ -2838,7 +2863,7 @@ function hsPopup(l) {
     <div class="hs-pop">
       ${l.image_url ? `<img src="${esc(l.image_url)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
       <div class="hs-pop-body">
-        <span class="hs-price">${hsPrice(l)}<small>/mois</small></span>
+        <span class="hs-price">${hsPriceHtml(l)}</span>
         ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
         <div class="hs-place">${esc(hsPlace(l))}${l.geo_precision !== "exact" ? "<br>Position approximative (centre du NPA)" : ""}</div>
         <button class="btn btn-primary btn-sm" onclick="hsOpenListing(${l.id})">Voir l'annonce</button>
@@ -2984,7 +3009,7 @@ function hsRenderDetail(l) {
   $("#hs-listing-body").innerHTML = `
     ${gallery}
     <div class="hs-detail ${l.is_new ? "is-new" : ""}">
-      <span class="hs-price">${hsPrice(l)}<small>/mois${charges ? ", " + charges : ""}</small></span>
+      <span class="hs-price">${hsPriceHtml(l, charges ? ", " + charges : "")}</span>
       <h2>${esc(l.title || "Annonce")}</h2>
       ${facts.length ? `<div class="hs-facts">${facts.map((f) => `<span>${f}</span>`).join("")}</div>` : ""}
       <div class="hs-place" style="margin-top:.35rem">📍 ${esc(hsPlace(l) || "Adresse inconnue")}${
@@ -3179,11 +3204,27 @@ function hsOpenSearchModal(id = null) {
   $("#hs-surface-max").value = c.surface_max ?? "";
   $("#hs-kw-in").value = (c.keywords_include || []).join(", ");
   $("#hs-kw-out").value = (c.keywords_exclude || []).join(", ");
-  $("#hs-sources").innerHTML = hsState.meta.sources.map((src) => `
-    <label class="hs-source">
-      <input type="checkbox" value="${src.key}" ${c.sources.includes(src.key) ? "checked" : ""} />
-      <span><span class="hs-src" style="--src:${src.color}">${esc(src.label)}</span><small>${esc(src.note)}</small></span>
-    </label>`).join("");
+  $("#hs-sources").innerHTML = [["portal", "Portails"], ["regie", "Régies"]].map(([group, title]) => {
+    const sources = hsState.meta.sources.filter((s) => (s.group || "portal") === group);
+    if (!sources.length) return "";
+    const elsewhere = group === "regie" && (hsState.meta.elsewhere || []).length
+      ? `<p class="hs-hint hs-elsewhere">${hsState.meta.elsewhere.map((e) =>
+          `<b>${esc(e.label)}</b> : ${esc(e.note)}`).join("<br>")}</p>` : "";
+    return `
+      <div class="hs-source-group">
+        <div class="hs-source-head">
+          <span>${title}</span>
+          <button type="button" class="hs-link" onclick="hsToggleSourceGroup('${group}')">Tout cocher ou décocher</button>
+        </div>
+        <div class="hs-source-grid">${sources.map((src) => `
+          <label class="hs-source">
+            <input type="checkbox" value="${src.key}" data-group="${group}" ${c.sources.includes(src.key) ? "checked" : ""} />
+            <span><span class="hs-src" style="--src:${src.color}">${esc(src.label)}</span><small>${esc(src.note)}</small></span>
+          </label>`).join("")}
+        </div>
+        ${elsewhere}
+      </div>`;
+  }).join("");
   const interval = s ? s.interval_minutes : 60;
   const sel = $("#hs-interval");
   if (![...sel.options].some((o) => Number(o.value) === interval)) {
@@ -3199,6 +3240,12 @@ function hsOpenSearchModal(id = null) {
   $("#hs-search-delete").classList.toggle("hidden", !s);
   hsSyncRobot();
   $("#hs-search-modal").showModal();
+}
+
+function hsToggleSourceGroup(group) {
+  const boxes = [...document.querySelectorAll(`#hs-sources input[data-group="${group}"]`)];
+  const check = !boxes.every((b) => b.checked); // tout coché → tout décocher, sinon tout cocher
+  boxes.forEach((b) => { b.checked = check; });
 }
 
 function hsSyncRobot() {

@@ -7,3 +7,8 @@ __pycache__/
 # NOTE: data/dashboard.db is intentionally NOT ignored.
 # The SQLite database travels with the repo so a `git pull`
 # on another machine brings your data along.
+
+# Finances (FIRE tab): salaries, balances, bank statements — NEVER committed.
+# The repo is public. Move this data with the encrypted backup (Finances → Réglages).
+data/finance/
+*.perrufin

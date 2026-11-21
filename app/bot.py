@@ -19,6 +19,10 @@ feature registry. Features:
   every 10 min (with or without Telegram: results also land in the
   dashboard); each run sends its own summary of new listings. `/apparts`
   reads the current state.
+- **finances / FIRE** — the scheduler refreshes prices, FX and CPI daily at
+  18:30 (Telegram or not); `/fire` gives the altitude, the freedom year and
+  the open quests — never an amount, the chat is shared; on the first days of
+  the month a single reminder asks for the monthly check-in.
 
 Future features should register their own cron jobs here (and in
 main.startup) via `add_cron_job()`.
@@ -346,6 +350,63 @@ def _housing_command(args: str, chat_id: int, user_id: int) -> str:
     return housing_message()
 
 
+# ---------------- Finances / FIRE ----------------
+
+FINANCE_REFRESH = (18, 30)     # prices, FX and CPI, every day (scheduler always runs)
+
+
+def _finance_refresh() -> None:
+    from .finance import market
+    try:
+        market.refresh_all()
+    except Exception:  # noqa: BLE001 — never kill the scheduler
+        pass
+
+
+def fire_message() -> str:
+    """« Where are we on the climb » — percentages and years only (shared chat)."""
+    from .routers import finance
+    s = finance.summary()
+    if not s.get("onboarding_done"):
+        return "🏔️ Finances\n\nPas encore configuré — ouvrez l'onglet Finances du dashboard pour l'accueil."
+    lines = ["🏔️ Liberté financière", ""]
+    if s.get("progress") is not None:
+        lines.append(f"Altitude : {s['altitude']:,} m ({round(s['progress'] * 100)} %) — {s['peak']}".replace(",", "'"))
+    if s.get("fi_year"):
+        ages = ", ".join(f"{n} {a} ans" for n, a in (s.get("fi_ages") or {}).items())
+        lines.append(f"Année de liberté : {s['fi_year']} ({ages})")
+    lv = s["level"]
+    lines.append(f"Niveau {lv['level']} · {lv['title']} · série de {s['streak']['months']} mois")
+    if s.get("quests"):
+        lines += ["", "À faire :"] + [f"{q['emoji']} {q['title']}" for q in s["quests"]]
+    return "\n".join(lines)
+
+
+def _fire_command(args: str, chat_id: int, user_id: int) -> str:
+    return fire_message()
+
+
+def send_checkin_reminder() -> bool:
+    """1st-5th of the month at 09:00: one reminder if the month's check-in is not done yet."""
+    from .finance import db as fdb, gamify
+    today = datetime.now()
+    if today.day > 5:
+        return False
+    settings = fdb.get_settings()
+    month = today.strftime("%Y-%m")
+    if not settings.get("onboarding_done") or settings.get("last_checkin_reminder") == month:
+        return False
+    if gamify.streak()["this_month_done"]:
+        return False
+    months = gamify.streak()["months"]
+    keep = f" — et garder votre série de {months} mois" if months else ""
+    msg = f"📒 Le point du mois\n\nDeux minutes pour mettre à jour les soldes dans l'onglet Finances{keep}."
+    sent = telegram.send_message(msg)
+    if sent:
+        fdb.save_settings({"last_checkin_reminder": month})
+    return sent
+
+
 # ---------------- Ajouter une envie en langage naturel ----------------
 
 # Une conversation en cours par chat : le bot pose une question, la réponse
@@ -582,6 +643,9 @@ def _help_command(args: str, chat_id: int, user_id: int) -> str:
         "\n"
         "Appartements :\n"
         "/apparts — les recherches, les nouvelles annonces, les favoris\n"
+        "\n"
+        "Finances :\n"
+        "/fire — altitude, année de liberté, ce qu'il reste à faire (sans montants)\n"
         "\n"
         "En message privé, pas besoin de commande : écris ton envie ou ce que tu sors "
         "d'un carton normalement, je comprends et je mets à jour."
@@ -843,6 +907,13 @@ def start() -> None:
             max_instances=1,
             misfire_grace_time=None,  # machine en veille : on rattrape au réveil
         )
+        _scheduler.add_job(
+            _finance_refresh,
+            CronTrigger(hour=FINANCE_REFRESH[0], minute=FINANCE_REFRESH[1], timezone=TELEGRAM_TZ or None),
+            id="finance-market-refresh",
+            coalesce=True,
+            misfire_grace_time=6 * 3600,  # machine en veille à 18:30 : on rattrape dans la soirée
+        )
         if telegram.is_configured():
             _start_telegram_jobs()
         _scheduler.start()
@@ -862,11 +933,13 @@ def _start_telegram_jobs() -> None:
     telegram.register_command("/range", _put_back_command)
     telegram.register_command("/series", _shows_command)
     telegram.register_command("/apparts", _housing_command)
+    telegram.register_command("/fire", _fire_command)
     telegram.register_text_handler(_storage_text_handler)
     telegram.register_text_handler(_wish_text_handler)
     telegram.register_command("/help", _help_command)
     add_cron_job(send_watering_check, 9, 0)
     add_cron_job(send_watering_check, 21, 0)
+    add_cron_job(send_checkin_reminder, 9, 5)
 
     for func, hour, minute in _cron_jobs:
         _scheduler.add_job(
