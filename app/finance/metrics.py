@@ -213,10 +213,59 @@ def write_auto_snapshots() -> int:
     return n
 
 
+# --------------------------------------------------------------------------- budget & shared costs
+
+def split_by(incomes: dict[int, float], mode: str | None) -> dict[int, float]:
+    """Each adult's part of the shared costs: by income (default) or equal parts (`spending_split`)."""
+    if not incomes:
+        return {}
+    tot = sum(max(0.0, v) for v in incomes.values())
+    if mode == "equal" or len(incomes) == 1 or tot <= 0:
+        return {i: 1 / len(incomes) for i in incomes}
+    return {i: max(0.0, v) / tot for i, v in incomes.items()}
+
+
+def common_shares(conn) -> dict[int, float]:
+    """Today's split of the shared costs between the adults — the rule of the individual plan
+    (`model._individual`): gross income of the income lines active today, or equal parts."""
+    today = date.today().isoformat()
+    inc = {a["id"]: 0.0 for a in adults(conn)}
+    for r in conn.execute("SELECT member_id, gross_annual_cents, start_date, end_date FROM incomes"):
+        if r["member_id"] in inc and (not r["start_date"] or r["start_date"] <= today) \
+                and (not r["end_date"] or r["end_date"] >= today):
+            inc[r["member_id"]] += from_cents(r["gross_annual_cents"])
+    return split_by(inc, db.get_settings().get("spending_split"))
+
+
+def budget_lines(conn) -> tuple[dict[str, float], dict[int, dict[str, float]]]:
+    """The planned budget per month: (shared part {category: CHF}, personal parts {member_id: {category: CHF}})."""
+    common = {r["category"]: from_cents(r["monthly_cents"]) for r in conn.execute("SELECT * FROM budget")}
+    personal: dict[int, dict[str, float]] = {}
+    for r in conn.execute("SELECT * FROM budget_personal"):
+        personal.setdefault(r["member_id"], {})[r["category"]] = from_cents(r["monthly_cents"])
+    return common, personal
+
+
+def shared_categories(common: dict[str, float], personal: dict[int, dict[str, float]]) -> set[str]:
+    """Living-cost categories budgeted only as shared. Their real spending counts as shared too,
+    whichever account paid it: rent paid by one adult is still split, and the other one paying
+    them back (a transfer between own accounts) changes nothing."""
+    mine = {c for lines in personal.values() for c, v in lines.items() if v}
+    return {c for c, v in common.items() if v and c not in mine and c not in EXCLUDED_FROM_LIVING}
+
+
 # --------------------------------------------------------------------------- cash flow
 
 def _tx_rows(conn, since: str, member: int | None, ads: list[int]) -> list[dict]:
+    """Transactions since a date, each with `chf` = its amount for the scope.
+
+    For one adult: an explicit `member_id` wins; then a category budgeted only as shared
+    counts for that adult's share of the shared costs; else the account's ownership share."""
     accs = {a["id"]: a for a in db.rows(conn.execute("SELECT * FROM accounts"))}
+    shared, my_part = set(), 0.0
+    if member is not None:
+        shared = shared_categories(*budget_lines(conn))
+        my_part = common_shares(conn).get(member, 0.0)
     out = []
     for t in db.rows(conn.execute("SELECT * FROM transactions WHERE date >= ? ORDER BY date", (since,))):
         acc = accs.get(t["account_id"])
@@ -226,6 +275,8 @@ def _tx_rows(conn, since: str, member: int | None, ads: list[int]) -> list[dict]
             share = 1.0
         elif t["member_id"]:
             share = 1.0 if t["member_id"] == member else 0.0
+        elif t["category"] in shared and not t["is_transfer"]:
+            share = my_part
         else:
             share = scope_share(acc, member, ads)
         if share <= 0:
@@ -236,33 +287,57 @@ def _tx_rows(conn, since: str, member: int | None, ads: list[int]) -> list[dict]
     return out
 
 
+MAX_SPREAD = 24  # months an operation can be spread over (PUT /transactions/{id} spread_months)
+
+
+def _add_months(ym: str, k: int) -> str:
+    """'2026-11' + 2 → '2027-01'."""
+    n = int(ym[:4]) * 12 + int(ym[5:7]) - 1 + k
+    return f"{n // 12:04d}-{n % 12 + 1:02d}"
+
+
 def cashflow(scope: str | None = None, months: int = 12) -> dict:
-    """Income, spending and savings per month from the imported transactions."""
+    """Income, spending and savings per month from the imported transactions.
+
+    An operation with `spread_months` = N counts 1/N in its month and in each of the N-1
+    months after it (a yearly health premium paid in January → 1/12 each month). A part only
+    lands in a month that has statements; parts in months without data are left out.
+    """
     member = parse_scope(scope)
-    start = _month_ends(months)[0][0] + "-01"
+    window = [m for m, _end in _month_ends(months)]
+    start = window[0] + "-01"
     with db.get_conn() as conn:
         ads = [a["id"] for a in adults(conn)]
-        txs = _tx_rows(conn, start, member, ads)
+        # look back far enough to catch an older payment that is spread into the window
+        txs = _tx_rows(conn, _add_months(window[0], 1 - MAX_SPREAD) + "-01", member, ads)
+    in_window = set(window)
+    covered = {t["date"][:7] for t in txs}  # months with at least one statement line
     by_month: dict[str, dict] = {}
     cats: dict[str, float] = defaultdict(float)
     uncategorized = 0
     for t in txs:
-        m = t["date"][:7]
-        rec = by_month.setdefault(m, {"month": m, "income": 0.0, "spending": 0.0, "by_category": defaultdict(float)})
         cat = t["category"]
         ctype = CATEGORIES.get(cat, {}).get("type")
         if t["is_transfer"] or ctype == "transfer":
             continue
-        if not cat:
+        if not cat and t["date"] >= start:
             uncategorized += 1
-        if ctype == "income" or (not cat and t["chf"] > 0):
-            rec["income"] += t["chf"]
-        else:
-            rec["spending"] += -t["chf"]
-            rec["by_category"][cat or "divers"] += -t["chf"]
-            cats[cat or "divers"] += -t["chf"]
+        is_income = ctype == "income" or (not cat and t["chf"] > 0)
+        n = min(MAX_SPREAD, max(1, int(t.get("spread_months") or 1)))
+        for i in range(n):
+            m = _add_months(t["date"][:7], i)
+            if m not in in_window or m not in covered:
+                continue
+            part = t["chf"] / n
+            rec = by_month.setdefault(m, {"month": m, "income": 0.0, "spending": 0.0, "by_category": defaultdict(float)})
+            if is_income:
+                rec["income"] += part
+            else:
+                rec["spending"] += -part
+                rec["by_category"][cat or "divers"] += -part
+                cats[cat or "divers"] += -part
     rows = []
-    for m, _end in _month_ends(months):
+    for m in window:
         r = by_month.get(m, {"month": m, "income": 0.0, "spending": 0.0, "by_category": {}})
         inc, sp = r["income"], r["spending"]
         rows.append({"month": m, "income": inc, "spending": sp, "savings": inc - sp,
@@ -283,17 +358,30 @@ def cashflow(scope: str | None = None, months: int = 12) -> dict:
 def spending_profile() -> dict:
     """Yearly living costs for the plan: budget if set, else imported transactions, else a default.
 
-    Taxes and children are excluded: the engine computes them itself.
+    Taxes and children are excluded: the engine computes them itself. Amounts are for the
+    household; `personal` / `personal_rent` ({member_id: CHF per year}) are the parts of
+    `annual` / `rent` that one adult spends alone (empty unless the budget has personal lines).
     """
     with db.get_conn() as conn:
-        budget = {r["category"]: from_cents(r["monthly_cents"]) for r in conn.execute("SELECT * FROM budget")}
-    living_budget = {k: v for k, v in budget.items() if k not in EXCLUDED_FROM_LIVING and v}
+        common, personal = budget_lines(conn)
+
+    def living(lines: dict[str, float]) -> dict[str, float]:
+        return {k: v for k, v in lines.items() if k not in EXCLUDED_FROM_LIVING and v}
+
+    mine = {m: living(lines) for m, lines in personal.items()}
+    mine = {m: lines for m, lines in mine.items() if lines}
+    personal_annual: dict[int, float] = {m: sum(lines.values()) * 12 for m, lines in mine.items()}
+    personal_rent: dict[int, float] = {m: lines.get("logement", 0.0) * 12 for m, lines in mine.items()}
     cf = cashflow(None, 12)
-    if living_budget:
-        annual = sum(living_budget.values()) * 12
-        rent = budget.get("logement", 0.0) * 12
+    if living(common) or mine:
+        by_cat: dict[str, float] = defaultdict(float)
+        for lines in (living(common), *mine.values()):
+            for k, v in lines.items():
+                by_cat[k] += v * 12
+        by_cat = dict(by_cat)
+        annual = sum(by_cat.values())
+        rent = by_cat.get("logement", 0.0)
         source = "budget"
-        by_cat = {k: v * 12 for k, v in living_budget.items()}
     elif cf["months_with_data"] >= 2:
         k = 12 / cf["months_with_data"]
         by_cat = {c: v * k for c, v in cf["by_category"].items() if c not in EXCLUDED_FROM_LIVING}
@@ -304,5 +392,6 @@ def spending_profile() -> dict:
         annual, rent, source, by_cat = 60_000.0, 24_000.0, "default", {}
     essential = sum(v for c, v in by_cat.items() if CATEGORIES.get(c, {}).get("essential"))
     return {"annual": annual, "rent": rent, "source": source, "by_category": by_cat,
+            "personal": personal_annual, "personal_rent": personal_rent,
             "essential": essential if by_cat else annual * 0.7,
             "actual_12m": cf["spending"] * 12 / cf["months_with_data"] if cf["months_with_data"] else None}

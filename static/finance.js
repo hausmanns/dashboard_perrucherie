@@ -60,6 +60,7 @@ function finAge(birth) {
 }
 
 function finModal(html, { wide = false } = {}) {
+  finTipHide();
   const dlg = $("#fin-modal");
   dlg.classList.toggle("fin-modal-wide", wide);
   $("#fin-modal-body").innerHTML = html;
@@ -88,6 +89,274 @@ function finShares(owners) {
   }).join("");
 }
 
+/* ------------------------------------------------------------------ « ? » explanations
+ * finQ(key) puts a small « ? » after a term. Hover, keyboard focus or a tap opens a short
+ * explanation; a click (or tap) pins it, Escape or a click elsewhere closes it.
+ * The texts below are static HTML written here — never user data. Any element with
+ * data-tip-t / data-tip-b / data-tip-f (title, body, footer: plain text, escaped on display)
+ * gets the same popup: the badges use it. */
+
+const FIN_GLOSSARY = {
+  // Sommet
+  altitude: ["L'altitude", [
+    "Votre chemin vers la liberté, dessiné comme une montée : du Léman (372 m) à la Pointe Dufour (4'634 m).",
+    "Le calcul : l'argent <b>disponible</b> que vous avez ÷ celui qu'il faudrait pour arrêter de travailler aujourd'hui. À 50 %, vous êtes à mi-pente.",
+  ]],
+  level: ["Niveau et XP", [
+    "Des points pour les bonnes habitudes : le point du mois, un document ajouté, des opérations classées, une quête faite.",
+    "Ils ne changent aucun calcul : c'est pour la motivation.",
+  ]],
+  streak: ["La série 🔥", [
+    "Le nombre de mois d'affilée où le <b>point du mois</b> a été fait. Un mois sauté, et la série repart de zéro.",
+  ]],
+  fi_year: ["Libres en", [
+    "La première année où vous pourriez arrêter de travailler sans jamais manquer d'argent, jusqu'à la fin du plan (95 ans par défaut).",
+    "Le plan suit chaque année : salaires, impôts vaudois et fédéraux, AVS, LPP, 3e pilier, enfants, rendements.",
+    "Les trois années en dessous : 🎒 en dépensant moins, 🏔️ comme aujourd'hui, 🥂 en dépensant plus.",
+  ]],
+  net_worth: ["Patrimoine net", [
+    "Tout ce que vous avez, moins ce que vous devez : comptes, placements, 2e et 3e piliers, logement, moins l'hypothèque et les crédits.",
+  ]],
+  freedom_days: ["Jours de liberté", [
+    "Combien de jours vous pourriez vivre <b>sans salaire</b> avec l'argent disponible, au rythme de vos dépenses actuelles.",
+    "Les 2e et 3e piliers ne comptent pas : ils sont bloqués jusqu'à la retraite.",
+  ]],
+  savings_rate: ["Taux d'épargne", [
+    "La part de ce qui rentre qui n'est pas dépensée, sur les 12 derniers mois de relevés. 30 % = sur 100 fr. reçus, 30 restent.",
+    "Il faut des relevés bancaires importés pour le mesurer. C'est le chiffre qui fait le plus bouger l'année de liberté.",
+  ]],
+  coast: ["Coast FI 🚡", [
+    "« Coast », c'est avancer en roue libre, sans pédaler.",
+    "Le montant : l'argent disponible qu'il faudrait avoir <b>aujourd'hui</b> pour pouvoir arrêter d'épargner. Vous continuez à travailler, les salaires paient juste la vie courante, et cet argent grossit seul jusqu'à 65 ans. Avec l'AVS et la LPP, la retraite à 65 ans est alors assurée.",
+    "« Atteint » : vous y êtes déjà.",
+  ]],
+  need_now: ["Il faudrait aujourd'hui", [
+    "L'argent disponible qu'il faudrait avoir pour arrêter de travailler <b>dès cette année</b>. Il doit tenir jusqu'à l'arrivée des rentes AVS et LPP et du 3e pilier.",
+    "C'est le sommet de la montagne. La « règle des 3,5 % » (dépenses d'une année ÷ 3,5 %) est le calcul rapide des blogs FIRE, donné pour comparer : le plan, lui, calcule année par année.",
+  ]],
+  quests: ["Quêtes", [
+    "Les petites choses utiles à faire maintenant : un solde à mettre à jour, un document à ajouter, le 3e pilier avant le 31 décembre…",
+    "Chacune rapporte des XP. Le chiffre sur l'onglet Finances = le nombre de quêtes ouvertes.",
+  ]],
+  badges: ["Badges", [
+    "Des étapes franchies, reconnues à partir de vos chiffres. Passez sur un badge (ou touchez-le) pour voir comment l'obtenir.",
+  ]],
+  milestones: ["Les étapes", [
+    "Ce qui arrive, année après année : naissances, événements de vie, retraits du 3e pilier (dès 60 ans), rentes AVS, liberté financière.",
+  ]],
+  scope: ["Ensemble ou chacun", [
+    "<b>👪 Ensemble</b> : le foyer entier.",
+    "<b>Une personne</b> : comme si elle gérait ses finances seule. Ses revenus, ses comptes (et sa part des comptes communs), ses lignes de budget perso et sa part du budget commun (selon les revenus ou à parts égales, Réglages › Le foyer).",
+  ]],
+  // Patrimoine
+  liquid: ["Disponible", [
+    "L'argent utilisable à tout moment : comptes courants et épargne, titres et ETF, crypto, liquide.",
+    "C'est lui qui paie les années entre l'arrêt du travail et les rentes.",
+  ]],
+  pension: ["Prévoyance", [
+    "2e pilier (LPP, la caisse de pension), 3e pilier (3a) et libre passage.",
+    "Bloqués jusqu'à la retraite (le 3a dès 60 ans). Le plan les compte quand ils deviennent utilisables.",
+  ]],
+  property_net: ["Immobilier net", [
+    "La valeur de vos biens (le logement…) moins les dettes : hypothèque et crédits.",
+  ]],
+  equity_pct: ["Part en actions", [
+    "La part de ce compte placée en actions. Elle fixe le rendement attendu et les hauts et les bas dans le plan.",
+    "Vide = automatique : 0 % pour un compte bancaire, 100 % pour titres, ETF et crypto. Avec des positions, elle est calculée toute seule.",
+  ]],
+  include_in_fi: ["Compter dans le plan", [
+    "Décochez pour un compte qui ne doit pas financer votre liberté, par exemple l'épargne d'un enfant.",
+  ]],
+  holdings: ["Positions", [
+    "Une position = un titre ou un ETF, avec la quantité que vous avez.",
+    "Avec un symbole Yahoo (<code>VT</code>, <code>CHSPI.SW</code>…), la valeur suit les cours toute seule, chaque jour à 18:30 : plus besoin de saisir le solde.",
+  ]],
+  // Budget
+  income_month: ["Entrées / mois", [
+    "Ce qui arrive sur vos comptes (salaires nets…), en moyenne sur les mois avec des relevés.",
+    "Les virements entre vos propres comptes ne comptent pas.",
+  ]],
+  spending_month: ["Dépenses / mois", [
+    "Ce qui sort de vos comptes, en moyenne sur les mois avec des relevés. Sans relevés : le total du budget prévu.",
+  ]],
+  savings_month: ["Épargne / mois", [
+    "Entrées moins dépenses : ce qui reste chaque mois.",
+  ]],
+  budget: ["Budget prévu", [
+    "Vos dépenses prévues par mois. <b>Commun</b> = ce que vous partagez (loyer, courses…). La colonne d'une personne = ce qu'elle dépense seule (sport, téléphone…).",
+    "Dans la vue d'une personne : ses lignes perso + sa part du commun (selon les revenus ou à parts égales, Réglages › Le foyer). Son plan utilise ce total ; la vue Ensemble utilise tout.",
+    "« réel » = la moyenne de vos relevés. Une catégorie budgétée seulement en commun compte aussi en commun dans les relevés, peu importe qui a payé.",
+  ]],
+  operations: ["Opérations", [
+    "Les lignes de vos relevés importés. Chacune reçoit une catégorie. Corrigez-en une, et une règle est retenue pour les suivantes.",
+    "Les virements entre vos propres comptes ne comptent ni comme entrée, ni comme dépense.",
+    "Un gros montant payé une fois pour plusieurs mois (assurance maladie à l'année, impôts…) ? Choisissez <b>÷ 12 mois</b> à côté de sa catégorie. Il compte alors pour 1/12 dans son mois et dans chacun des 11 suivants. Les graphiques et le « réel » du budget restent lisses.",
+  ]],
+  // Plan
+  fi_styles: ["Frugale, confortable, généreuse", [
+    "Le même plan avec trois niveaux de dépenses une fois libres : 🎒 moins qu'aujourd'hui, 🏔️ comme aujourd'hui, 🥂 plus.",
+    "L'année sous chaque bouton = quand ce style devient possible. Un clic choisit le style suivi partout.",
+  ]],
+  safe_year: ["Version prudente", [
+    "Les marchés ne montent pas tous les ans. On rejoue le plan avec 1'000 marchés tirés au hasard.",
+    "La version prudente = la première année d'arrêt qui marche dans au moins 85 % des cas.",
+  ]],
+  scenario: ["Scénario", [
+    "Une variante du plan : se marier, acheter, passer à temps partiel… Le plan actuel ne change pas. Choisissez un scénario ici pour voir tout le plan avec, ou comparez-les côte à côte.",
+  ]],
+  proj_chart: ["Patrimoine projeté", [
+    "Comment votre patrimoine évolue chaque année, si les marchés font une année « normale » à chaque fois (le rendement médian).",
+    "En francs d'aujourd'hui : l'inflation est déjà retirée, 100'000 fr. en 2045 achètent autant que 100'000 fr. maintenant.",
+  ]],
+  mc_chart: ["Les 1'000 marchés", [
+    "Le même plan, rejoué avec 1'000 suites de bonnes et de mauvaises années tirées au hasard.",
+    "La ligne = le cas du milieu. La bande = 80 % des cas. Le % de réussite = la part des cas où l'argent ne manque jamais.",
+  ]],
+  curve_chart: ["Réussite selon l'année d'arrêt", [
+    "Pour chaque année où vous pourriez arrêter : la chance de ne jamais manquer d'argent. Plus on attend, plus c'est sûr.",
+  ]],
+  sources_chart: ["D'où vient l'argent", [
+    "Ce qui paie les dépenses, année par année : les salaires, puis les rentes AVS et LPP, les capitaux des 2e et 3e piliers, et des retraits sur votre épargne.",
+  ]],
+  taxes_chart: ["Impôts et cotisations", [
+    "Impôt sur le revenu et la fortune (Vaud et Confédération), impôt sur les retraits en capital, et cotisations AVS.",
+    "Ces cotisations AVS sont dues même sans travailler, jusqu'à 65 ans, d'après votre fortune.",
+  ]],
+  events: ["Événements de vie", [
+    "Ce qui change votre trajectoire à une date : naissance, temps partiel, achat, mariage, départ, rentrée d'argent… Le plan en tient compte tout seul.",
+  ]],
+  scenarios: ["Scénarios", [
+    "Des « et si… ? » à côté de votre plan, qui reste intact. « Comparer côte à côte » montre l'année de liberté, les impôts et le patrimoine de chacun.",
+  ]],
+  assumptions: ["Hypothèses", [
+    "Les réglages du calcul : rendements, inflation, âge AVS… Les valeurs par défaut sont prudentes. Ne les changez que si vous savez pourquoi.",
+    "« Réel » = après inflation.",
+  ]],
+  // Réglages
+  communal: ["Coefficient communal", [
+    "Le multiplicateur de votre commune sur l'impôt cantonal. Il figure sur votre décision de taxation.",
+  ]],
+  child_tax_split: ["Les enfants, côté impôts", [
+    "Pour des parents non mariés : qui déduit les enfants aux impôts. 50 % = moitié chacun, le cas habituel.",
+  ]],
+  spending_split: ["Partager les dépenses communes", [
+    "Comment partager les lignes <b>communes</b> du budget dans la vue d'une personne. Selon les revenus = qui gagne plus paie plus. À parts égales = moitié chacun.",
+  ]],
+};
+
+function finQ(key) {
+  const g = FIN_GLOSSARY[key];
+  if (!g) return "";
+  return `<button type="button" class="fin-q" data-q="${key}" aria-expanded="false" aria-label="Explication : ${fe(g[0])}">?</button>`;
+}
+
+const finPop = { el: null, trigger: null, pinned: false, timer: null };
+
+function finTipTrigger(node) { return node?.closest?.("[data-q], [data-tip-t]") || null; }
+function finTipInside(node) { return !!node?.closest?.("#fin-pop"); }
+
+function finTipShow(t, pinned = false) {
+  clearTimeout(finPop.timer);
+  let html;
+  if (t.dataset.q) {
+    const g = FIN_GLOSSARY[t.dataset.q];
+    if (!g) return;
+    html = `<h5>${g[0]}</h5>${g[1].map((p) => `<p>${p}</p>`).join("")}`;
+  } else {
+    html = `<h5>${fe(t.dataset.tipT)}</h5>${t.dataset.tipB ? `<p>${fe(t.dataset.tipB)}</p>` : ""}${t.dataset.tipF ? `<p class="fin-pop-foot">${fe(t.dataset.tipF)}</p>` : ""}`;
+  }
+  if (finPop.trigger && finPop.trigger !== t) finTipHide();
+  if (!finPop.el) {
+    finPop.el = document.createElement("div");
+    finPop.el.id = "fin-pop";
+    finPop.el.className = "fin-pop";
+    finPop.el.setAttribute("role", "tooltip");
+  }
+  // inside an open <dialog>, the popup must live in it to be drawn above (top layer)
+  const host = t.closest("dialog[open]") || document.body;
+  if (finPop.el.parentNode !== host) host.appendChild(finPop.el);
+  finPop.el.innerHTML = html;
+  finPop.el.hidden = false;
+  finPop.trigger = t;
+  finPop.pinned = pinned;
+  t.setAttribute("aria-describedby", "fin-pop");
+  if (t.classList.contains("fin-q")) t.setAttribute("aria-expanded", "true");
+  finTipPlace();
+}
+
+function finTipHide() {
+  clearTimeout(finPop.timer);
+  const t = finPop.trigger;
+  if (t) {
+    t.removeAttribute("aria-describedby");
+    if (t.classList.contains("fin-q")) t.setAttribute("aria-expanded", "false");
+  }
+  if (finPop.el) finPop.el.hidden = true;
+  finPop.trigger = null;
+  finPop.pinned = false;
+}
+
+function finTipPlace() {
+  const { el, trigger } = finPop;
+  if (!el || !trigger || el.hidden) return;
+  if (!trigger.isConnected) { finTipHide(); return; }
+  const r = trigger.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), vw - w - 8);
+  let top = r.bottom + 8;
+  if (top + h > vh - 8 && r.top - h - 8 >= 8) top = r.top - h - 8;
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+}
+
+function finTipInit() {
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const t = finTipTrigger(e.target);
+    if (t) {
+      clearTimeout(finPop.timer);
+      if (t !== finPop.trigger) finPop.timer = setTimeout(() => finTipShow(t), 90);
+    } else if (finTipInside(e.target)) {
+      clearTimeout(finPop.timer);
+    }
+  });
+  document.addEventListener("pointerout", (e) => {
+    if (e.pointerType !== "mouse" || finPop.pinned) return;
+    if (!finTipTrigger(e.target) && !finTipInside(e.target)) return;
+    const to = e.relatedTarget;
+    if (to && finPop.trigger && (finTipTrigger(to) === finPop.trigger || finTipInside(to))) return;
+    clearTimeout(finPop.timer);
+    finPop.timer = setTimeout(finTipHide, 140);
+  });
+  document.addEventListener("click", (e) => {
+    const t = finTipTrigger(e.target);
+    if (t) {
+      e.preventDefault();  // a « ? » inside a <label> or <summary> must not toggle it
+      if (t === finPop.trigger && finPop.pinned) finTipHide();
+      else finTipShow(t, true);
+    } else if (finPop.trigger && !finTipInside(e.target)) {
+      finTipHide();
+    }
+  });
+  document.addEventListener("focusin", (e) => {
+    const t = finTipTrigger(e.target);
+    if (t && t !== finPop.trigger) finTipShow(t);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (e.target === finPop.trigger && !finPop.pinned && !finTipInside(e.relatedTarget)) finTipHide();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !finPop.trigger) return;
+    e.preventDefault();  // first Escape closes the popup, not the modal under it
+    const t = finPop.trigger;
+    finTipHide();
+    if (t.isConnected && document.activeElement !== t) t.focus();
+  });
+  window.addEventListener("scroll", finTipPlace, { passive: true, capture: true });
+  window.addEventListener("resize", finTipHide);
+}
+
 /* ------------------------------------------------------------------ boot & navigation */
 
 function finOnShow() {
@@ -96,6 +365,7 @@ function finOnShow() {
 
 async function finBoot() {
   fin.booted = true;
+  finTipInit();
   try { fin.tab = localStorage.getItem("fin.tab") || "summit"; } catch { /* private mode */ }
   try { fin.scope = localStorage.getItem("fin.scope") || "household"; } catch { /* ignore */ }
   $("#fin-checkin-btn").addEventListener("click", finOpenCheckin);
@@ -110,8 +380,15 @@ async function finBoot() {
     e.preventDefault(); depth = 0; zone.classList.add("hidden");
     if (e.dataTransfer.files.length) finUpload([...e.dataTransfer.files]);
   });
-  let rt = null;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (fin.status?.onboarding_done && $("#view-finance").classList.contains("active")) finRenderTab(); }, 250); });
+  // Charts are drawn for a width: redraw when the width changes. Not on a height change, since
+  // a phone keyboard opening is one and the redraw would wipe what is being typed.
+  let rt = null, lastW = window.innerWidth;
+  window.addEventListener("resize", () => {
+    if (window.innerWidth === lastW) return;
+    lastW = window.innerWidth;
+    clearTimeout(rt);
+    rt = setTimeout(() => { if (fin.status?.onboarding_done && $("#view-finance").classList.contains("active")) finRenderTab(); }, 250);
+  });
   await finRefresh();
 }
 
@@ -138,8 +415,8 @@ function finRenderScope() {
   if (fin.scope !== "household" && !adults.some((a) => `member:${a.id}` === fin.scope)) fin.scope = "household";
   const opts = [["household", "👪 Ensemble"], ...adults.map((a) => [`member:${a.id}`, `${a.emoji} ${a.name}`])];
   $("#fin-scope").innerHTML = opts.map(([k, l]) =>
-    `<button class="seg-btn${fin.scope === k ? " active" : ""}" data-scope="${k}" role="tab" aria-selected="${fin.scope === k}">${fe(l)}</button>`).join("");
-  $("#fin-scope").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    `<button class="seg-btn${fin.scope === k ? " active" : ""}" data-scope="${k}" role="tab" aria-selected="${fin.scope === k}">${fe(l)}</button>`).join("") + finQ("scope");
+  $("#fin-scope").querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => {
     fin.scope = b.dataset.scope;
     try { localStorage.setItem("fin.scope", fin.scope); } catch { /* ignore */ }
     finRenderScope();
@@ -164,6 +441,7 @@ function finGo(tab) {
 function finRenderTab() {
   // A fresh container per render: a slow, older view that resolves late writes into a
   // detached box (and stops at its isConnected check) instead of replacing the new one.
+  finTipHide();
   const host = $("#fin-body");
   const body = document.createElement("div");
   body.className = "fin-view";
@@ -563,36 +841,36 @@ async function finSummit(body) {
     <div class="fin-hero card">
       <div class="fin-mountain" id="fin-mountain"></div>
       <div class="fin-hero-side">
-        <p class="fin-alt"><b>${fcNum(alt.meters)}</b> m</p>
+        <p class="fin-alt"><b>${fcNum(alt.meters)}</b> m${finQ("altitude")}</p>
         <p class="fin-alt-sub">${alt.progress >= 1 ? "🏁 Sommet atteint !" : `${fe(alt.last_peak.above || peakName)} · ${pct(alt.progress)} du chemin`}</p>
         ${next ? `<p class="fin-next">Prochain sommet : <b>${fe(next.name)}</b> (${fcNum(next.meters)} m)${toNext != null ? ` — encore <b>${kchf(toNext)}</b>` : ""}</p>` : ""}
         <div class="fin-level">
           <span class="fin-level-badge">${lvl.level}</span>
-          <div><b>${fe(lvl.title)}</b><small>${fcNum(lvl.xp)} XP · prochain niveau à ${fcNum(lvl.next_level)}</small>${fcMeter(lvl.progress, 1, FC.s[1])}</div>
-          <span class="fin-streak" title="Mois d'affilée avec un point du mois">🔥 ${g.streak.months}</span>
+          <div><b>${fe(lvl.title)}${finQ("level")}</b><small>${fcNum(lvl.xp)} XP · prochain niveau à ${fcNum(lvl.next_level)}</small>${fcMeter(lvl.progress, 1, FC.s[1])}</div>
+          <span class="fin-streak" data-q="streak" tabindex="0">🔥 ${g.streak.months}</span>
         </div>
       </div>
     </div>
 
     <div class="fin-kpis">
-      <div class="fin-kpi fin-kpi-main"><span class="lbl">Libres en</span>
+      <div class="fin-kpi fin-kpi-main"><span class="lbl">Libres en${finQ("fi_year")}</span>
         <span class="val">${p.fi_year || "—"}</span>
         <span class="sub">${p.fi_year ? ages : "pas avant la retraite avec ce plan"}</span>
         ${p.fi_years ? `<span class="sub fin-styles">🎒 ${p.fi_years.lean || "—"} · 🏔️ ${p.fi_years.normal || "—"} · 🥂 ${p.fi_years.fat || "—"}</span>` : ""}</div>
-      <div class="fin-kpi"><span class="lbl">Patrimoine net</span><span class="val">${kchf(ov.net_worth.total)}</span>
+      <div class="fin-kpi"><span class="lbl">Patrimoine net${finQ("net_worth")}</span><span class="val">${kchf(ov.net_worth.total)}</span>
         <span class="sub">${delta != null ? `${delta >= 0 ? "▲" : "▼"} ${kchf(Math.abs(delta))} depuis le dernier point` : `dont ${kchf(ov.net_worth.liquid)} disponibles`}</span></div>
-      <div class="fin-kpi"><span class="lbl">Jours de liberté</span><span class="val">${fd != null ? fcNum(fd) : "—"}</span>
+      <div class="fin-kpi"><span class="lbl">Jours de liberté${finQ("freedom_days")}</span><span class="val">${fd != null ? fcNum(fd) : "—"}</span>
         <span class="sub">${fd != null ? `≈ ${finDuration(fd)} de dépenses déjà à l'abri` : ""}</span></div>
-      <div class="fin-kpi"><span class="lbl">Taux d'épargne</span><span class="val">${sr != null ? pct(sr) : "—"}</span>
+      <div class="fin-kpi"><span class="lbl">Taux d'épargne${finQ("savings_rate")}</span><span class="val">${sr != null ? pct(sr) : "—"}</span>
         <span class="sub">${sr != null ? "sur 12 mois de relevés" : "importez vos relevés pour le mesurer"}</span></div>
-      <div class="fin-kpi"><span class="lbl">Coast FI 🚡</span><span class="val">${p.coast?.reached ? "Atteint" : p.coast?.required_liquid_now ? kchf(p.coast.required_liquid_now) : "—"}</span>
+      <div class="fin-kpi"><span class="lbl">Coast FI 🚡${finQ("coast")}</span><span class="val">${p.coast?.reached ? "Atteint" : p.coast?.required_liquid_now ? kchf(p.coast.required_liquid_now) : "—"}</span>
         <span class="sub">${p.coast?.reached ? "sans épargner un franc de plus, la retraite à 65 tient" : "disponibles nécessaires pour pouvoir arrêter d'épargner"}</span></div>
-      <div class="fin-kpi"><span class="lbl">Il faudrait aujourd'hui</span><span class="val">${need != null ? kchf(need) : "—"}</span>
+      <div class="fin-kpi"><span class="lbl">Il faudrait aujourd'hui${finQ("need_now")}</span><span class="val">${need != null ? kchf(need) : "—"}</span>
         <span class="sub">pour arrêter maintenant (règle des ${fcNum(p.rule_of_thumb?.swr_pct || 3.5, { dec: 1 })} % : ${kchf(p.rule_of_thumb?.number)})</span></div>
     </div>
 
     <div class="fin-cols">
-      <div class="card fin-quests"><h3 class="fin-h3">🗺️ Quêtes</h3>
+      <div class="card fin-quests"><h3 class="fin-h3">🗺️ Quêtes${finQ("quests")}</h3>
         ${g.quests.length ? g.quests.map((q) => `
           <div class="fin-quest">
             <span class="fin-quest-emo">${q.emoji}</span>
@@ -601,14 +879,15 @@ async function finSummit(body) {
             ${finQuestButton(q)}
           </div>`).join("") : `<p class="muted">Rien à faire pour l'instant — profitez de la vue 🌄</p>`}
       </div>
-      <div class="card fin-badges-card"><h3 class="fin-h3">🏅 Badges <small class="muted">${g.earned_count} / ${g.badges.length}</small></h3>
+      <div class="card fin-badges-card"><h3 class="fin-h3">🏅 Badges${finQ("badges")} <small class="muted">${g.earned_count} / ${g.badges.length}</small></h3>
         <div class="fin-badges">${g.badges.map((b) => `
-          <div class="fin-badge${b.earned_at ? " on" : ""}" title="${fe(b.desc)}${b.earned_at ? ` — obtenu le ${new Date(b.earned_at).toLocaleDateString("fr-CH")}` : ""}">
+          <div class="fin-badge${b.earned_at ? " on" : ""}" tabindex="0" data-tip-t="${fe(`${b.emoji} ${b.label}`)}" data-tip-b="${fe(b.desc)}"
+            data-tip-f="${fe(b.earned_at ? `✅ Obtenu le ${new Date(b.earned_at).toLocaleDateString("fr-CH")} · +${b.xp} XP` : `🔒 Pas encore obtenu · +${b.xp} XP à la clé`)}">
             <span>${b.emoji}</span><small>${fe(b.label)}</small></div>`).join("")}</div>
       </div>
     </div>
 
-    ${p.milestones ? `<div class="card"><h3 class="fin-h3">🧭 Les étapes</h3>
+    ${p.milestones ? `<div class="card"><h3 class="fin-h3">🧭 Les étapes${finQ("milestones")}</h3>
       <div class="fin-timeline">${p.milestones.filter((m) => m.year >= new Date().getFullYear() - 1).map((m) => `
         <div class="fin-step fin-step-${m.kind}"><span class="yr">${m.year}</span><span class="emo">${m.emoji}</span><span class="lbl">${fe(m.label)}</span></div>`).join("")}</div></div>` : ""}
 
@@ -647,6 +926,7 @@ function finBadge(n) {
   const b = $("#finance-badge");
   if (!b) return;
   b.textContent = n;
+  b.title = n ? `${n} quête${n > 1 ? "s" : ""} à faire — onglet Sommet, carte « Quêtes »` : "";
   b.classList.toggle("hidden", !n);
 }
 
@@ -682,7 +962,7 @@ function finRenderHomeCard(s) {
       <button class="btn btn-primary btn-sm" onclick="document.querySelector('.tab[data-view=finance]').click()">Voir</button></div>
     ${(s.quests || []).map((q) => `<div class="home-item"><span class="home-thumb">${q.emoji}</span><div class="info"><strong>${fe(q.title)}</strong></div></div>`).join("")}
     <p class="muted fridge-hint">Niveau ${s.level.level} · ${fe(s.level.title)} · 🔥 ${s.streak.months} mois</p>`;
-  finBadge((s.quests || []).length);
+  finBadge(s.quest_count ?? (s.quests || []).length);
 }
 
 /* ------------------------------------------------------------------ check-in (point du mois) */
@@ -757,10 +1037,10 @@ async function finWealth(body) {
   const invested = sum("liquid") - cash;
   body.innerHTML = `
     <div class="fin-kpis fin-kpis-4">
-      <div class="fin-kpi"><span class="lbl">Patrimoine net</span><span class="val">${kchf(Object.keys(groups).reduce((t, g) => t + sum(g), 0))}</span></div>
-      <div class="fin-kpi"><span class="lbl">Disponible</span><span class="val">${kchf(sum("liquid"))}</span><span class="sub">dont ${kchf(invested)} investis</span></div>
-      <div class="fin-kpi"><span class="lbl">Prévoyance</span><span class="val">${kchf(sum("pension"))}</span><span class="sub">2e et 3e piliers, bloqués jusqu'à 60 ans</span></div>
-      <div class="fin-kpi"><span class="lbl">Immobilier net</span><span class="val">${kchf(sum("property") + sum("debt") + sum("other"))}</span></div>
+      <div class="fin-kpi"><span class="lbl">Patrimoine net${finQ("net_worth")}</span><span class="val">${kchf(Object.keys(groups).reduce((t, g) => t + sum(g), 0))}</span></div>
+      <div class="fin-kpi"><span class="lbl">Disponible${finQ("liquid")}</span><span class="val">${kchf(sum("liquid"))}</span><span class="sub">dont ${kchf(invested)} investis</span></div>
+      <div class="fin-kpi"><span class="lbl">Prévoyance${finQ("pension")}</span><span class="val">${kchf(sum("pension"))}</span><span class="sub">2e et 3e piliers, bloqués jusqu'à 60 ans</span></div>
+      <div class="fin-kpi"><span class="lbl">Immobilier net${finQ("property_net")}</span><span class="val">${kchf(sum("property") + sum("debt") + sum("other"))}</span></div>
     </div>
     <div class="card"><div id="fin-hist"></div></div>
     <div class="card"><div id="fin-alloc"></div></div>
@@ -828,7 +1108,7 @@ async function finAccountModal(id = null) {
     <label>À qui ? <small class="muted">parts en %, vide = commun à parts égales</small></label>
     <div class="field-row">${adults.map((m) => `<label>${m.emoji} ${fe(m.name)}<input data-owner="${m.id}" type="text" inputmode="numeric" value="${owners[m.id] != null ? Math.round(owners[m.id] * 100) : ""}" placeholder="%" /></label>`).join("")}</div>
     <div class="field-row"><label>Solde aujourd'hui${finMoneyInput("fa-balance", a.valuation === "holdings" ? null : a.value)}</label>
-      <label>Part en actions (%)<input id="fa-eq" type="text" inputmode="numeric" value="${a.equity_pct ?? ""}" placeholder="auto" /></label></div>
+      <label><span>Part en actions (%)${finQ("equity_pct")}</span><input id="fa-eq" type="text" inputmode="numeric" value="${a.equity_pct ?? ""}" placeholder="auto" /></label></div>
     <div id="fa-lpp" class="${isLpp ? "" : "hidden"}">
       <h4 class="wz-h4">Certificat de prévoyance</h4>
       <div class="field-row"><label>Bonifications d'épargne / an${finMoneyInput("fa-credits", meta.savings_credits_annual)}</label>
@@ -836,9 +1116,9 @@ async function finAccountModal(id = null) {
       <div class="field-row"><label>Taux de conversion (%)<input id="fa-conv" type="text" inputmode="decimal" value="${meta.conversion_pct ?? ""}" placeholder="6.0" /></label>
         <label>Rachat possible${finMoneyInput("fa-buyin", meta.buyin_potential)}</label></div>
     </div>
-    <label class="wz-check"><input type="checkbox" id="fa-fi"${a.include_in_fi ? " checked" : ""} /> Compte dans le plan de liberté</label>
+    <label class="wz-check"><input type="checkbox" id="fa-fi"${a.include_in_fi ? " checked" : ""} /> Compte dans le plan de liberté${finQ("include_in_fi")}</label>
     ${a.holdings ? `<h4 class="wz-h4">Positions</h4><div class="fin-holdings">${a.holdings.map((h) => `<div class="fin-hold"><span>${fe(h.symbol || h.isin)}</span><span>${fe(h.name)}</span><span>${fcNum(h.quantity, { dec: 2 })}</span><b>${chf(h.value_chf)}</b><button class="icon-btn" data-hdel="${h.id}">🗑️</button></div>`).join("")}</div>` : ""}
-    ${id ? `<button type="button" class="btn btn-ghost btn-sm" id="fa-hold">+ Position (titre / ETF)</button>` : ""}
+    ${id ? `<p><button type="button" class="btn btn-ghost btn-sm" id="fa-hold">+ Position (titre / ETF)</button>${finQ("holdings")}</p>` : ""}
     <div class="modal-actions">
       ${id ? `<button type="button" class="btn btn-ghost fin-danger-btn" id="fa-del">Supprimer</button>` : ""}
       <button type="button" class="btn btn-ghost" data-close>Annuler</button>
@@ -895,68 +1175,28 @@ function finHoldingModal(accountId) {
 
 /* ------------------------------------------------------------------ BUDGET */
 
+function finBudgetData() {
+  return Promise.all([api.get(`/api/finance/cashflow?scope=${fin.scope}&months=12`),
+    api.get(`/api/finance/budget?scope=${fin.scope}`)]);
+}
+
 async function finBudget(body) {
-  const [cf, bud] = await Promise.all([api.get(`/api/finance/cashflow?scope=${fin.scope}&months=12`), api.get("/api/finance/budget")]);
+  const [cf, bud] = await finBudgetData();
   if (!body.isConnected) return;
   const cats = fin.status.categories;
-  const has = cf.months_with_data > 0;
-  const n = Math.max(1, cf.months_with_data);
   body.innerHTML = `
-    <div class="fin-kpis fin-kpis-4">
-      <div class="fin-kpi"><span class="lbl">Entrées / mois</span><span class="val">${has ? kchf(cf.income / n) : "—"}</span></div>
-      <div class="fin-kpi"><span class="lbl">Dépenses / mois</span><span class="val">${has ? kchf(cf.spending / n) : kchf(bud.planned_total)}</span><span class="sub">${has ? `budget : ${kchf(bud.planned_total)}` : "budget estimé"}</span></div>
-      <div class="fin-kpi"><span class="lbl">Épargne / mois</span><span class="val">${has ? kchf(cf.savings / n) : "—"}</span></div>
-      <div class="fin-kpi"><span class="lbl">Taux d'épargne</span><span class="val">${cf.savings_rate != null ? pct(cf.savings_rate) : "—"}</span></div>
-    </div>
-    ${has ? `<div class="fin-grid2"><div class="card"><div id="fin-cf"></div></div><div class="card"><div id="fin-sr"></div></div></div>
-      <div class="fin-grid2"><div class="card"><div id="fin-cats"></div></div><div class="card"><div id="fin-sankey"></div></div></div>` :
-      `<div class="card fin-empty"><h3>📥 Pas encore de relevés</h3>
-        <p>Pour mesurer le vrai budget sans rien saisir : dans votre e-banking, exportez le relevé des 3 derniers mois au format
-        <b>CAMT.053 (XML)</b> — toutes les banques suisses le proposent — ou en CSV, puis glissez-le ici. Revolut, Neon, Wise, Yuh : l'export CSV marche aussi.</p>
-        <button class="btn btn-primary" onclick="document.getElementById('fin-file-input').click()">📎 Déposer un relevé</button></div>`}
-    <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🧮 Budget prévu (par mois)</h3><button class="btn btn-primary btn-sm" id="fin-bud-save">Enregistrer</button></div>
-      <div class="fin-budget">${bud.rows.filter((r) => r.category !== "impots").map((r) => `
-        <label class="fin-bud"><span>${r.emoji} ${fe(r.label)}</span>
-          <input type="text" inputmode="decimal" data-bud="${r.category}" value="${r.planned ? fcNum(r.planned) : ""}" placeholder="0" />
-          <small class="muted">${r.actual != null ? `réel ${fcNum(r.actual)}` : ""}</small></label>`).join("")}</div>
-      <p class="muted">Les impôts et les enfants ne sont pas dans le budget : le moteur les calcule lui-même (barèmes 2026, allocations, crèche).</p></div>
-    <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🧾 Opérations</h3>
+    <div id="fin-bud-top">${finBudgetTop(cf, bud)}</div>
+    ${finBudgetCard(bud)}
+    <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🧾 Opérations${finQ("operations")}</h3>
       <div class="plan-actions"><button class="btn btn-ghost btn-sm" id="fin-ai-cat">🤖 Classer avec l'IA</button></div></div>
       <div class="fin-txfilters">
         <input type="search" id="fin-tx-q" placeholder="Rechercher…" value="${fe(fin.tx.q)}" />
         <select id="fin-tx-cat"><option value="">Toutes catégories</option>${Object.entries(cats).map(([k, c]) => `<option value="${k}"${fin.tx.category === k ? " selected" : ""}>${c.emoji} ${fe(c.label)}</option>`).join("")}</select>
-        <label class="wz-check"><input type="checkbox" id="fin-tx-unc"${fin.tx.uncategorized ? " checked" : ""} /> à classer (${cf.uncategorized})</label>
+        <label class="wz-check"><input type="checkbox" id="fin-tx-unc"${fin.tx.uncategorized ? " checked" : ""} /> à classer (<span id="fin-unc-n">${cf.uncategorized}</span>)</label>
       </div>
       <div id="fin-txlist"><p class="muted">Chargement…</p></div></div>`;
-  if (has) {
-    const months = cf.months.filter((m) => m.income || m.spending);
-    fcColumns($("#fin-cf"), {
-      title: "Entrées et dépenses", sub: "par mois, hors virements entre vos comptes", x: months.map((m) => finMonthLabel(m.month)),
-      series: [{ label: "Entrées", color: FC.s[0], values: months.map((m) => m.income) }, { label: "Dépenses", color: FC.s[1], values: months.map((m) => m.spending) }],
-    });
-    fcColumns($("#fin-sr"), {
-      title: "Taux d'épargne", sub: "part des entrées qui reste", x: months.map((m) => finMonthLabel(m.month)),
-      series: [{ label: "Taux d'épargne", color: FC.s[2], values: months.map((m) => m.savings_rate != null ? m.savings_rate * 100 : null) }],
-      fmt: (v) => `${fcNum(v)} %`, fmtTip: (v) => `${fcNum(v)} %`, fmtTable: (v) => v == null ? "—" : `${fcNum(v)} %`,
-      refLine: { value: 30, label: "30 %" },
-    });
-    const byCat = Object.entries(cf.by_category).map(([k, v]) => ({ key: k, label: cats[k]?.label || k, emoji: cats[k]?.emoji, value: v / n, ref: (bud.rows.find((r) => r.category === k) || {}).planned || 0 }));
-    fcHBars($("#fin-cats"), { title: "Où part l'argent", sub: "moyenne par mois", items: byCat, color: FC.s[1], valueLabel: "Réel", refLabel: "Budget" });
-    const top = byCat.slice(0, 7);
-    const rest = byCat.slice(7).reduce((a, c) => a + c.value, 0);
-    const targets = top.map((c) => ({ label: `${c.emoji || ""} ${c.label}`, value: c.value, color: c.key === "impots" ? FC.s[3] : FC.s[1] }));
-    if (rest > 0) targets.push({ label: "Autres", value: rest, color: FC.s[1] });
-    const save = cf.income / n - cf.spending / n;
-    if (save > 0) targets.push({ label: "🏔️ Épargne", value: save, color: FC.s[2] });
-    fcSankey($("#fin-sankey"), { title: "Le chemin d'un franc", sub: "entrées mensuelles moyennes → usages", sources: [{ label: "Entrées", value: cf.income / n }], targets });
-  }
-  $("#fin-bud-save").onclick = async () => {
-    const vals = {};
-    body.querySelectorAll("[data-bud]").forEach((i) => { vals[i.dataset.bud] = finParse(i.value) || 0; });
-    await api.put("/api/finance/budget", vals);
-    toast("Budget enregistré");
-    finRenderTab();
-  };
+  finBudgetCharts(cf, bud);
+  finBudgetWire(body);
   $("#fin-ai-cat").onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = "🤖 Réflexion…";
     try {
@@ -972,6 +1212,146 @@ async function finBudget(body) {
   finTxList();
 }
 
+/** KPIs + charts of the Budget tab (or the "no statements yet" card). */
+function finBudgetTop(cf, bud) {
+  const has = cf.months_with_data > 0;
+  const n = Math.max(1, cf.months_with_data);
+  return `
+    <div class="fin-kpis fin-kpis-4">
+      <div class="fin-kpi"><span class="lbl">Entrées / mois${finQ("income_month")}</span><span class="val">${has ? kchf(cf.income / n) : "—"}</span></div>
+      <div class="fin-kpi"><span class="lbl">Dépenses / mois${finQ("spending_month")}</span><span class="val">${has ? kchf(cf.spending / n) : kchf(bud.planned_total)}</span><span class="sub">${has ? `budget : ${kchf(bud.planned_total)}` : "budget estimé"}</span></div>
+      <div class="fin-kpi"><span class="lbl">Épargne / mois${finQ("savings_month")}</span><span class="val">${has ? kchf(cf.savings / n) : "—"}</span></div>
+      <div class="fin-kpi"><span class="lbl">Taux d'épargne${finQ("savings_rate")}</span><span class="val">${cf.savings_rate != null ? pct(cf.savings_rate) : "—"}</span></div>
+    </div>
+    ${has ? `<div class="fin-grid2"><div class="card"><div id="fin-cf"></div></div><div class="card"><div id="fin-sr"></div></div></div>
+      <div class="fin-grid2"><div class="card"><div id="fin-cats"></div></div><div class="card"><div id="fin-sankey"></div></div></div>` :
+      `<div class="card fin-empty"><h3>📥 Pas encore de relevés</h3>
+        <p>Pour mesurer le vrai budget sans rien saisir : dans votre e-banking, exportez le relevé des 3 derniers mois au format
+        <b>CAMT.053 (XML)</b> — toutes les banques suisses le proposent — ou en CSV, puis glissez-le ici. Revolut, Neon, Wise, Yuh : l'export CSV marche aussi.</p>
+        <button class="btn btn-primary" onclick="document.getElementById('fin-file-input').click()">📎 Déposer un relevé</button></div>`}`;
+}
+
+function finBudgetCharts(cf, bud) {
+  if (!(cf.months_with_data > 0) || !$("#fin-cf")) return;
+  const cats = fin.status.categories;
+  const n = Math.max(1, cf.months_with_data);
+  const months = cf.months.filter((m) => m.income || m.spending);
+  fcColumns($("#fin-cf"), {
+    title: "Entrées et dépenses", sub: "par mois, hors virements entre vos comptes", x: months.map((m) => finMonthLabel(m.month)),
+    series: [{ label: "Entrées", color: FC.s[0], values: months.map((m) => m.income) }, { label: "Dépenses", color: FC.s[1], values: months.map((m) => m.spending) }],
+  });
+  fcColumns($("#fin-sr"), {
+    title: "Taux d'épargne", sub: "part des entrées qui reste", x: months.map((m) => finMonthLabel(m.month)),
+    series: [{ label: "Taux d'épargne", color: FC.s[2], values: months.map((m) => m.savings_rate != null ? m.savings_rate * 100 : null) }],
+    fmt: (v) => `${fcNum(v)} %`, fmtTip: (v) => `${fcNum(v)} %`, fmtTable: (v) => v == null ? "—" : `${fcNum(v)} %`,
+    refLine: { value: 30, label: "30 %" },
+  });
+  const byCat = Object.entries(cf.by_category).map(([k, v]) => ({ key: k, label: cats[k]?.label || k, emoji: cats[k]?.emoji, value: v / n, ref: (bud.rows.find((r) => r.category === k) || {}).planned || 0 }));
+  fcHBars($("#fin-cats"), { title: "Où part l'argent", sub: "moyenne par mois", items: byCat, color: FC.s[1], valueLabel: "Réel", refLabel: "Budget" });
+  const top = byCat.slice(0, 7);
+  const rest = byCat.slice(7).reduce((a, c) => a + c.value, 0);
+  const targets = top.map((c) => ({ label: `${c.emoji || ""} ${c.label}`, value: c.value, color: c.key === "impots" ? FC.s[3] : FC.s[1] }));
+  if (rest > 0) targets.push({ label: "Autres", value: rest, color: FC.s[1] });
+  const save = cf.income / n - cf.spending / n;
+  if (save > 0) targets.push({ label: "🏔️ Épargne", value: save, color: FC.s[2] });
+  fcSankey($("#fin-sankey"), { title: "Le chemin d'un franc", sub: "entrées mensuelles moyennes → usages", sources: [{ label: "Entrées", value: cf.income / n }], targets });
+}
+
+/** An operation changed (category, spread): redraw the figures. The list and any budget being typed stay as they are. */
+async function finBudgetRefresh() {
+  const top = $("#fin-bud-top");
+  if (!top) return;
+  const [cf, bud] = await finBudgetData();
+  if (!top.isConnected) return;
+  finTipHide();
+  top.innerHTML = finBudgetTop(cf, bud);
+  finBudgetCharts(cf, bud);
+  bud.rows.forEach((r) => {
+    const c = document.querySelector(`.fin-brow[data-row="${r.category}"] .fin-bcat`);
+    if (c) c.innerHTML = finBudCat(r);
+  });
+  if ($("#fin-unc-n")) $("#fin-unc-n").textContent = cf.uncategorized;
+}
+
+function finBudCat(r) {
+  return `${r.emoji} ${fe(r.label)}${r.actual != null ? `<small>réel ${fcNum(r.actual)}</small>` : ""}`;
+}
+
+/** The planned budget. Ensemble: one column for the shared part + one per adult, all editable.
+ *  One adult: their own lines (editable) + their share of the shared part (read-only). */
+function finBudgetCard(bud) {
+  const solo = bud.member_id != null;
+  const adults = finAdults();
+  const rows = bud.rows.filter((r) => r.category !== "impots");
+  const money = (v) => (v ? fcNum(v) : "");
+  const input = (who, cat, v) => `<input type="text" inputmode="decimal" data-who="${who}" data-cat="${cat}" value="${money(v)}" placeholder="0" aria-label="${fe(fin.status.categories[cat]?.label || cat)}" />`;
+  const cols = solo
+    ? [`<span>Perso</span>`, `<span>Part du commun <small>${pct(bud.share)}</small></span>`]
+    : [`<span>👪 Commun</span>`, ...adults.map((m) => `<span>${m.emoji} ${fe(m.name)}</span>`)];
+  const cells = (r) => solo
+    ? [input(bud.member_id, r.category, r.personal[bud.member_id]), `<span class="fin-bshare">${r.common_share ? fcNum(r.common_share) : "—"}</span>`]
+    : [input("common", r.category, r.common), ...adults.map((m) => input(m.id, r.category, r.personal[m.id]))];
+  const who = solo ? finWho(bud.member_id) : "";
+  return `<div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🧮 Budget prévu (par mois)${finQ("budget")}</h3>
+      <button class="btn btn-primary btn-sm" id="fin-bud-save">Enregistrer</button></div>
+    <p class="fin-bud-note">${solo
+      ? `Les dépenses de ${who} : ses lignes <b>perso</b>, plus sa part des lignes <b>communes</b> (${pct(bud.share)}, ${bud.split === "equal" ? "à parts égales" : "selon les revenus"} · Réglages › Le foyer). Le commun se modifie dans la vue 👪 Ensemble.`
+      : `<b>Commun</b> = ce que vous partagez (loyer, courses…). La colonne d'une personne = ce qu'elle dépense seule (sport, téléphone…).`}</p>
+    <div class="fin-btable" style="--cols:${cols.length}">
+      <div class="fin-brow fin-bhead"><span></span>${cols.join("")}<span>Total</span></div>
+      ${rows.map((r) => `<div class="fin-brow" data-row="${r.category}">
+        <span class="fin-bcat">${finBudCat(r)}</span>
+        ${cells(r).join("")}<b class="fin-btot" data-tot>${r.planned ? fcNum(r.planned) : "—"}</b></div>`).join("")}
+      <div class="fin-brow fin-bfoot"><span>Total</span>${cols.map((_, i) => `<b data-coltot="${i}"></b>`).join("")}<b data-grand></b></div>
+    </div>
+    <p class="muted">Les impôts et les enfants ne sont pas dans le budget : le moteur les calcule lui-même (barèmes 2026, allocations, crèche).</p></div>`;
+}
+
+function finBudgetWire(body) {
+  const table = body.querySelector(".fin-btable");
+  if (!table) return;
+  // live totals: per row, per column, and the grand total
+  const recalc = () => {
+    const colTot = [];
+    let grand = 0;
+    table.querySelectorAll("[data-row]").forEach((row) => {
+      let t = 0;
+      [...row.children].slice(1, -1).forEach((cell, i) => {
+        const v = cell.tagName === "INPUT" ? finParse(cell.value) || 0 : finParse(cell.textContent) || 0;
+        colTot[i] = (colTot[i] || 0) + v;
+        t += v;
+      });
+      row.querySelector("[data-tot]").textContent = t ? fcNum(t) : "—";
+      grand += t;
+    });
+    table.querySelectorAll("[data-coltot]").forEach((b) => { b.textContent = fcNum(colTot[+b.dataset.coltot] || 0); });
+    table.querySelector("[data-grand]").textContent = fcNum(grand);
+  };
+  table.addEventListener("input", recalc);
+  recalc();
+  $("#fin-bud-save").onclick = async (e) => {
+    const byWho = {};
+    table.querySelectorAll("input[data-who]").forEach((i) => {
+      (byWho[i.dataset.who] ||= {})[i.dataset.cat] = finParse(i.value) || 0;
+    });
+    e.target.disabled = true;
+    try {
+      for (const [who, vals] of Object.entries(byWho)) {
+        await api.put(`/api/finance/budget${who === "common" ? "" : `?member_id=${who}`}`, vals);
+      }
+      toast("Budget enregistré");
+      finRenderTab();
+    } catch (err) { toast(err.message, true); e.target.disabled = false; }
+  };
+}
+
+const FIN_SPREAD = [1, 2, 3, 6, 12, 24];
+
+/** "417 / mois" under an amount that is spread over n months. */
+function finTxPart(amount, n) {
+  return n > 1 ? `<small>${fcNum(Math.abs(amount) / n)} / mois</small>` : "";
+}
+
 async function finTxList() {
   const t = fin.tx;
   const qs = new URLSearchParams({ limit: 100, offset: t.offset });
@@ -984,13 +1364,22 @@ async function finTxList() {
   if (!box) return;
   if (!res.items.length) { box.innerHTML = `<p class="muted">Aucune opération.</p>`; return; }
   const opts = (sel) => `<option value="">— à classer —</option>` + Object.entries(cats).map(([k, c]) => `<option value="${k}"${sel === k ? " selected" : ""}>${c.emoji} ${fe(c.label)}</option>`).join("");
-  box.innerHTML = `<div class="fin-txs">${res.items.map((x) => `
+  const spreadOpts = (n) => [...new Set([...FIN_SPREAD, n])].sort((a, b) => a - b)
+    .map((k) => `<option value="${k}"${k === n ? " selected" : ""}>${k === 1 ? "Ce mois" : `÷ ${k} mois`}</option>`).join("");
+  box.innerHTML = `<div class="fin-txs">${res.items.map((x) => {
+    const n = x.spread_months || 1;
+    return `
     <div class="fin-tx${x.category ? "" : " todo"}">
       <span class="d">${new Date(x.date).toLocaleDateString("fr-CH", { day: "2-digit", month: "2-digit", year: "2-digit" })}</span>
       <span class="t"><b>${fe(x.counterparty || x.description)}</b><small>${fe(x.counterparty ? x.description : "")} · ${fe(x.account_name)}${x.category_source === "llm" ? " · 🤖" : ""}</small></span>
-      <span class="a ${x.amount < 0 ? "neg" : "pos"}">${x.amount > 0 ? "+" : ""}${fcNum(x.amount, { dec: 2 })}</span>
-      <select data-tx="${x.id}" aria-label="Catégorie">${opts(x.category)}</select>
-    </div>`).join("")}</div>
+      <span class="a ${x.amount < 0 ? "neg" : "pos"}">${x.amount > 0 ? "+" : ""}${fcNum(x.amount, { dec: 2 })}${finTxPart(x.amount, n)}</span>
+      <span class="fin-tx-ctl">
+        <select data-tx="${x.id}" aria-label="Catégorie">${opts(x.category)}</select>
+        <select data-spread="${x.id}" data-amt="${x.amount}" class="${n > 1 ? "on" : ""}" aria-label="Compter sur combien de mois"
+          title="Compter sur plusieurs mois — p. ex. une assurance payée pour toute l'année">${spreadOpts(n)}</select>
+      </span>
+    </div>`;
+  }).join("")}</div>
     <div class="fin-pager"><span class="muted">${t.offset + 1}–${t.offset + res.items.length} sur ${res.total}</span>
       ${t.offset ? `<button class="btn btn-ghost btn-sm" id="fin-tx-prev">←</button>` : ""}
       ${t.offset + res.items.length < res.total ? `<button class="btn btn-ghost btn-sm" id="fin-tx-next">→</button>` : ""}</div>`;
@@ -999,6 +1388,19 @@ async function finTxList() {
       const r = await api.put(`/api/finance/transactions/${s.dataset.tx}`, { category: s.value, learn: true });
       toast(r.rule ? `Classé · règle « ${r.rule} » retenue${r.reapplied ? ` (${r.reapplied} autres)` : ""}` : "Classé");
       s.closest(".fin-tx").classList.toggle("todo", !s.value);
+      finBudgetRefresh().catch(() => {});
+    } catch (e) { toast(e.message, true); }
+  });
+  box.querySelectorAll("[data-spread]").forEach((s) => s.onchange = async () => {
+    const n = +s.value, amt = +s.dataset.amt;
+    try {
+      await api.put(`/api/finance/transactions/${s.dataset.spread}`, { spread_months: n });
+      s.classList.toggle("on", n > 1);
+      const a = s.closest(".fin-tx").querySelector(".a");
+      a.querySelector("small")?.remove();
+      a.insertAdjacentHTML("beforeend", finTxPart(amt, n));
+      toast(n > 1 ? `Compté ${fcNum(Math.abs(amt) / n)} par mois, pendant ${n} mois` : "Compté sur son mois seulement");
+      finBudgetRefresh().catch(() => {});
     } catch (e) { toast(e.message, true); }
   });
   if ($("#fin-tx-prev")) $("#fin-tx-prev").onclick = () => { t.offset = Math.max(0, t.offset - 100); finTxList(); };
@@ -1023,32 +1425,32 @@ async function finPlan(body) {
   const kinds = fin.status.event_kinds;
   body.innerHTML = `
     <div class="card fin-plan-head">
-      <div><p class="lbl">Avec ce plan, vous êtes libres en</p>
+      <div><p class="lbl">Avec ce plan, vous êtes libres en${finQ("fi_year")}</p>
         <p class="fin-big">${proj.fi_year || "—"}</p><p>${proj.fi_year ? ages : "Le plan ne trouve pas d'année avant 70 ans : réduisez les dépenses ou augmentez l'épargne."}</p>
         <p class="muted" id="fin-safe">Monte Carlo en cours…</p></div>
       <div class="fin-plan-ctl">
         <div class="seg" id="fin-style">${[["lean", "🎒 Frugale"], ["normal", "🏔️ Confortable"], ["fat", "🥂 Généreuse"]].map(([k, l]) =>
-          `<button class="seg-btn${style === k ? " active" : ""}" data-style="${k}">${l} <small>${proj.fi_years[k] || "—"}</small></button>`).join("")}</div>
-        <label>Scénario<select id="fin-scn"><option value="">Plan actuel</option>${scenarios.map((s) => `<option value="${s.id}"${sid === s.id ? " selected" : ""}>${fe(s.name)}</option>`).join("")}</select></label>
+          `<button class="seg-btn${style === k ? " active" : ""}" data-style="${k}">${l} <small>${proj.fi_years[k] || "—"}</small></button>`).join("")}${finQ("fi_styles")}</div>
+        <label><span>Scénario${finQ("scenario")}</span><select id="fin-scn"><option value="">Plan actuel</option>${scenarios.map((s) => `<option value="${s.id}"${sid === s.id ? " selected" : ""}>${fe(s.name)}</option>`).join("")}</select></label>
       </div>
     </div>
     <div class="card"><div id="fin-proj"></div></div>
     <div class="fin-grid2"><div class="card"><div id="fin-mc"></div></div><div class="card"><div id="fin-curve"></div></div></div>
     <div class="fin-grid2"><div class="card"><div id="fin-sources"></div></div><div class="card"><div id="fin-taxes"></div></div></div>
     <div class="fin-grid2">
-      <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">📅 Événements de vie</h3><button class="btn btn-primary btn-sm" id="fin-ev-add">+ Événement</button></div>
+      <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">📅 Événements de vie${finQ("events")}</h3><button class="btn btn-primary btn-sm" id="fin-ev-add">+ Événement</button></div>
         ${events.filter((e) => !e.scenario_id || e.scenario_id === sid).map((e) => `
           <div class="fin-ev"><span>${e.start_date ? e.start_date.slice(0, 4) : ""}${e.end_date ? "–" + e.end_date.slice(0, 4) : ""}</span>
             <span class="info"><b>${fe((kinds[e.kind] || e.kind).split(" (")[0])}</b><small>${e.member_id ? finWho(e.member_id) : "Ménage"} · ${fe(finEventParams(e))}${e.scenario_id ? " · scénario" : ""}</small></span>
             <button class="icon-btn" data-ev="${e.id}" title="Modifier">✏️</button></div>`).join("") || `<p class="muted">Aucun événement.</p>`}
       </div>
-      <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🔀 Scénarios</h3>
+      <div class="card"><div class="fin-cardhead"><h3 class="fin-h3">🔀 Scénarios${finQ("scenarios")}</h3>
         <div class="plan-actions"><button class="btn btn-ghost btn-sm" id="fin-scn-marry">💍 Et si on se mariait ?</button><button class="btn btn-primary btn-sm" id="fin-scn-add">+ Scénario</button></div></div>
         ${scenarios.map((s) => `<div class="fin-ev"><span>🔀</span><span class="info"><b>${fe(s.name)}</b><small>${fe(s.description || JSON.stringify(s.overrides))}</small></span><button class="icon-btn" data-scndel="${s.id}" title="Supprimer">🗑️</button></div>`).join("") || `<p class="muted">Comparez des choix : se marier, acheter, réduire son temps de travail…</p>`}
         ${scenarios.length ? `<button class="btn btn-ghost btn-sm" id="fin-scn-cmp">Comparer côte à côte</button><div id="fin-cmp"></div>` : ""}
       </div>
     </div>
-    <details class="card fin-assump"><summary><h3 class="fin-h3">⚙️ Hypothèses</h3><span class="muted">rendements, inflation, retraits, âge AVS…</span></summary>
+    <details class="card fin-assump"><summary><h3 class="fin-h3">⚙️ Hypothèses${finQ("assumptions")}</h3><span class="muted">rendements, inflation, retraits, âge AVS…</span></summary>
       <div class="fin-assump-grid">
         ${finAssumpInput("equity_real_return_pct", "Actions, rendement réel attendu (%)", a)}
         ${finAssumpInput("equity_vol_pct", "Actions, volatilité (%)", a)}
@@ -1076,7 +1478,7 @@ async function finPlan(body) {
   const x = yrs.map((y) => String(y.year));
   const fiMarker = proj.fi_year ? [{ x: String(proj.fi_year), label: "🏁 liberté" }] : [];
   fcArea($("#fin-proj"), {
-    title: "Patrimoine projeté", sub: "en francs d'aujourd'hui, chemin médian", x, stacked: true, markers: fiMarker,
+    title: "Patrimoine projeté", help: finQ("proj_chart"), sub: "en francs d'aujourd'hui, chemin médian", x, stacked: true, markers: fiMarker,
     series: [
       { label: "Disponible", color: FC.s[0], values: yrs.map((y) => Math.max(0, y.liquid)) },
       { label: "Prévoyance", color: FC.s[1], values: yrs.map((y) => y.pension_assets) },
@@ -1086,7 +1488,7 @@ async function finPlan(body) {
   });
   // income sources
   fcArea($("#fin-sources"), {
-    title: "D'où vient l'argent", sub: "chaque année : salaires, rentes, capitaux, retraits", x, stacked: true,
+    title: "D'où vient l'argent", help: finQ("sources_chart"), sub: "chaque année : salaires, rentes, capitaux, retraits", x, stacked: true,
     series: [
       { label: "Salaires & revenus", color: FC.s[0], values: yrs.map((y) => y.salary + y.side + y.allowances) },
       { label: "Rentes AVS / LPP", color: FC.s[1], values: yrs.map((y) => y.pension) },
@@ -1096,7 +1498,7 @@ async function finPlan(body) {
     tipExtra: (i) => `<div class="fc-tip-band">Dépenses<b>${chf(yrs[i].spending)}</b></div><div class="fc-tip-band">Impôts<b>${chf(yrs[i].taxes)}</b></div>`,
   });
   fcColumns($("#fin-taxes"), {
-    title: "Impôts & cotisations AVS", sub: "revenu + fortune + retraits en capital + AVS non-actif", x,
+    title: "Impôts & cotisations AVS", help: finQ("taxes_chart"), sub: "revenu + fortune + retraits en capital + AVS non-actif", x,
     series: [{ label: "Impôts", color: FC.s[1], values: yrs.map((y) => y.taxes + y.capital_tax + y.avs_nonactive) }],
   });
   // controls
@@ -1139,13 +1541,13 @@ async function finPlan(body) {
     const m = mc.plan;
     const xs = m.years.map(String);
     fcArea($("#fin-mc"), {
-      title: `Argent disponible — ${pct(m.success_rate)} de réussite`, sub: `${fcNum(m.runs)} marchés tirés au hasard : la bande couvre 80 % des cas`, x: xs,
+      title: `Argent disponible — ${pct(m.success_rate)} de réussite`, help: finQ("mc_chart"), sub: `${fcNum(m.runs)} marchés tirés au hasard : la bande couvre 80 % des cas`, x: xs,
       band: { lo: m.liquid.p10, hi: m.liquid.p90, lo2: m.liquid.p25, hi2: m.liquid.p75, color: FC.s[0], label: "10e – 90e centile" },
       series: [{ label: "Médiane", color: FC.s[0], values: m.liquid.p50 }, { label: "Plan déterministe", color: FC.soft, values: m.deterministic, dashed: true }],
       markers: proj.fi_year ? [{ x: String(proj.fi_year), label: "🏁" }] : [],
     });
     fcColumns($("#fin-curve"), {
-      title: "Réussite selon l'année d'arrêt", sub: `probabilité de ne jamais manquer d'argent · seuil ${pct(mc.target)}`,
+      title: "Réussite selon l'année d'arrêt", help: finQ("curve_chart"), sub: `probabilité de ne jamais manquer d'argent · seuil ${pct(mc.target)}`,
       x: mc.curve.map((c) => String(c.year)),
       series: [{ label: "Réussite", color: FC.s[0], values: mc.curve.map((c) => c.success_rate * 100) }],
       fmt: (v) => `${fcNum(v)} %`, fmtTip: (v) => `${fcNum(v)} %`, fmtTable: (v) => `${fcNum(v)} %`,
@@ -1154,8 +1556,8 @@ async function finPlan(body) {
     });
     const safe = $("#fin-safe");
     if (safe) safe.innerHTML = mc.safe_year
-      ? `🛡️ Version prudente (${pct(mc.target)} de réussite) : <b>${mc.safe_year}</b>`
-      : `🛡️ Aucune année testée n'atteint ${pct(mc.target)} de réussite.`;
+      ? `🛡️ Version prudente (${pct(mc.target)} de réussite) : <b>${mc.safe_year}</b>${finQ("safe_year")}`
+      : `🛡️ Aucune année testée n'atteint ${pct(mc.target)} de réussite.${finQ("safe_year")}`;
   }).catch(() => { const s = $("#fin-safe"); if (s) s.textContent = ""; });
 }
 
@@ -1476,9 +1878,9 @@ async function finSettings(body) {
     <div class="fin-grid2">
       <div class="card"><h3 class="fin-h3">👪 Le foyer</h3>
         <label>État civil<select id="fs-civil"><option value="unmarried"${s.civil_status === "unmarried" ? " selected" : ""}>Pas marié·es</option><option value="married"${s.civil_status === "married" ? " selected" : ""}>Marié·es</option></select></label>
-        <div class="field-row"><label>Commune<input id="fs-commune" value="${fe(s.commune)}" /></label><label>Coefficient communal (%)<input id="fs-coef" type="text" inputmode="decimal" value="${s.communal_coefficient}" /></label></div>
-        ${adults.length === 2 ? `<label>Les enfants, côté impôts : part de ${fe(adults[0].name)} (%)<input id="fs-split" type="text" inputmode="numeric" value="${Math.round(s.child_tax_split * 100)}" /><small class="muted">Parents non mariés : moitié-moitié par défaut (part de 0.5 partagée, déduction IFD partagée).</small></label>` : ""}
-        <label>Vue individuelle : les dépenses communes sont partagées<select id="fs-spend"><option value="income"${s.spending_split === "income" ? " selected" : ""}>selon les revenus</option><option value="equal"${s.spending_split === "equal" ? " selected" : ""}>à parts égales</option></select></label>
+        <div class="field-row"><label>Commune<input id="fs-commune" value="${fe(s.commune)}" /></label><label><span>Coefficient communal (%)${finQ("communal")}</span><input id="fs-coef" type="text" inputmode="decimal" value="${s.communal_coefficient}" /></label></div>
+        ${adults.length === 2 ? `<label><span>Les enfants, côté impôts : part de ${fe(adults[0].name)} (%)${finQ("child_tax_split")}</span><input id="fs-split" type="text" inputmode="numeric" value="${Math.round(s.child_tax_split * 100)}" /><small class="muted">Parents non mariés : moitié-moitié par défaut (part de 0.5 partagée, déduction IFD partagée).</small></label>` : ""}
+        <label><span>Vue individuelle : les dépenses communes sont partagées${finQ("spending_split")}</span><select id="fs-spend"><option value="income"${s.spending_split === "income" ? " selected" : ""}>selon les revenus</option><option value="equal"${s.spending_split === "equal" ? " selected" : ""}>à parts égales</option></select></label>
         <div class="modal-actions"><button class="btn btn-primary btn-sm" id="fs-save-hh">Enregistrer</button></div>
       </div>
       <div class="card"><h3 class="fin-h3">🧑‍🤝‍🧑 Personnes</h3>

@@ -141,6 +141,142 @@ def test_budget_goals(client):
     assert goals[0]["achieved_at"]
 
 
+def _adult_ids(client):
+    ms = client.get("/api/finance/members").json()
+    return next(m["id"] for m in ms if m["name"] == "Seb"), next(m["id"] for m in ms if m["name"] == "Lea")
+
+
+def test_personal_budget_lines_and_individual_plans(client):
+    onboard(client)  # shared budget: 2400 + 900 + 900 + 400 + 200 of living costs (+ taxes, excluded)
+    seb, lea = _adult_ids(client)
+    r = client.put(f"/api/finance/budget?member_id={seb}", json={"loisirs": 150, "telecom": 60})
+    assert r.status_code == 200
+    assert client.put("/api/finance/budget?member_id=9999", json={"loisirs": 1}).status_code == 404
+
+    hh = client.get("/api/finance/budget").json()
+    loisirs = next(x for x in hh["rows"] if x["category"] == "loisirs")
+    assert loisirs["common"] == 400 and loisirs["personal"][str(seb)] == 150 and loisirs["personal"][str(lea)] == 0
+    assert loisirs["planned"] == 550
+
+    me = client.get(f"/api/finance/budget?scope=member:{seb}").json()
+    s = me["share"]
+    assert s == pytest.approx(110 / 200)  # by income (default)
+    row = next(x for x in me["rows"] if x["category"] == "loisirs")
+    assert row["common_share"] == pytest.approx(400 * s) and row["planned"] == pytest.approx(150 + 400 * s)
+    logement = next(x for x in me["rows"] if x["category"] == "logement")
+    assert logement["planned"] == pytest.approx(2400 * s)
+
+    # the household plan uses everything; each adult their own lines + their share of the shared part
+    common = (2400 + 900 + 900 + 400 + 200) * 12
+    mine = (150 + 60) * 12
+    assert client.get("/api/finance/projection").json()["spending_now"] == pytest.approx(common + mine)
+    p_seb = client.get(f"/api/finance/projection?scope=member:{seb}").json()
+    p_lea = client.get(f"/api/finance/projection?scope=member:{lea}").json()
+    assert p_seb["spending_now"] == pytest.approx(mine + common * s)
+    assert p_lea["spending_now"] == pytest.approx(common * (1 - s))
+
+    # 0 removes a personal line; equal split from the settings
+    client.put(f"/api/finance/budget?member_id={seb}", json={"telecom": 0})
+    client.put("/api/finance/settings", json={"spending_split": "equal"})
+    me = client.get(f"/api/finance/budget?scope=member:{seb}").json()
+    assert me["share"] == 0.5
+    assert next(x for x in me["rows"] if x["category"] == "telecom")["planned"] == 0
+
+
+def test_shared_categories_count_as_shared_whoever_paid(client):
+    onboard(client)
+    seb, lea = _adult_ids(client)
+    client.put(f"/api/finance/budget?member_id={seb}", json={"loisirs": 150})  # loisirs: no longer shared-only
+    acc = next(a for a in client.get("/api/finance/accounts").json() if a["name"] == "Épargne Seb")
+    today = date.today().isoformat()
+    for desc, amount, cat in (("Loyer", -2400, "logement"), ("Fitness", -100, "loisirs"), ("ACI Vaud", -800, "impots")):
+        r = client.post("/api/finance/transactions", json={"account_id": acc["id"], "date": today, "amount": amount,
+                                                            "description": desc, "category": cat})
+        assert r.status_code == 201, r.text
+    s = client.get(f"/api/finance/budget?scope=member:{seb}").json()["share"]
+
+    cf_seb = client.get(f"/api/finance/cashflow?scope=member:{seb}").json()["by_category"]
+    cf_lea = client.get(f"/api/finance/cashflow?scope=member:{lea}").json()["by_category"]
+    # rent is budgeted as shared only: split, although Seb's account paid it
+    assert cf_seb["logement"] == pytest.approx(2400 * s) and cf_lea["logement"] == pytest.approx(2400 * (1 - s))
+    # sport has a personal line, taxes are never shared: they follow the account
+    assert cf_seb["loisirs"] == pytest.approx(100) and "loisirs" not in cf_lea
+    assert cf_seb["impots"] == pytest.approx(800) and "impots" not in cf_lea
+    # the household sees everything once
+    cf = client.get("/api/finance/cashflow").json()["by_category"]
+    assert cf["logement"] == pytest.approx(2400)
+    lea_row = next(x for x in client.get(f"/api/finance/budget?scope=member:{lea}").json()["rows"]
+                   if x["category"] == "logement")
+    assert lea_row["actual"] == pytest.approx(2400 * (1 - s))
+
+
+def _month_first(k: int) -> str:
+    """The 1st of the month, k months before this one."""
+    t = date.today()
+    n = t.year * 12 + t.month - 1 - k
+    return date(n // 12, n % 12 + 1, 1).isoformat()
+
+
+def test_spread_a_yearly_payment_over_months(client):
+    onboard(client)
+    acc = next(a for a in client.get("/api/finance/accounts").json() if a["name"] == "Épargne Seb")
+
+    def add(k, desc, amount, cat, **extra):
+        r = client.post("/api/finance/transactions", json={"account_id": acc["id"], "date": _month_first(k),
+                                                            "amount": amount, "description": desc, "category": cat, **extra})
+        assert r.status_code == 201, r.text
+
+    # three months of statements; the yearly health premium was paid two months ago
+    add(2, "Assura prime annuelle", -6000, "sante")
+    add(1, "Migros", -100, "alimentation")
+    add(0, "Migros", -100, "alimentation")
+    tx = client.get("/api/finance/transactions?q=Assura").json()["items"][0]
+    assert tx["spread_months"] == 1
+    cf = client.get("/api/finance/cashflow").json()
+    assert cf["by_category"]["sante"] == pytest.approx(6000)          # all of it in one month
+
+    r = client.put(f"/api/finance/transactions/{tx['id']}", json={"spread_months": 12})
+    assert r.status_code == 200 and r.json()["spread_months"] == 12
+    cf = client.get("/api/finance/cashflow").json()
+    months = {m["month"]: m for m in cf["months"]}
+    for k in (2, 1, 0):
+        assert months[_month_first(k)[:7]]["by_category"]["sante"] == pytest.approx(500)
+    assert cf["by_category"]["sante"] == pytest.approx(1500)          # months without statements get nothing
+    assert cf["months_with_data"] == 3
+    row = next(x for x in client.get("/api/finance/budget").json()["rows"] if x["category"] == "sante")
+    assert row["actual"] == pytest.approx(500)                         # the "réel" is the monthly cost
+
+    # last year's premium, paid before the 12-month window, still reaches into it
+    add(13, "Assura 2025", -4800, "sante", spread_months=12)
+    months = {m["month"]: m for m in client.get("/api/finance/cashflow").json()["months"]}
+    assert months[_month_first(2)[:7]]["by_category"]["sante"] == pytest.approx(500 + 400)
+    assert months[_month_first(1)[:7]]["by_category"]["sante"] == pytest.approx(500)
+
+    for bad in (0, 25):
+        assert client.put(f"/api/finance/transactions/{tx['id']}", json={"spread_months": bad}).status_code == 422
+    client.put(f"/api/finance/transactions/{tx['id']}", json={"spread_months": 1})
+    months = {m["month"]: m for m in client.get("/api/finance/cashflow").json()["months"]}
+    assert months[_month_first(2)[:7]]["by_category"]["sante"] == pytest.approx(6000 + 400)
+
+
+def test_old_database_gets_new_columns(tmp_path, monkeypatch):
+    import sqlite3
+
+    from app.finance import db
+
+    monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
+    old = sqlite3.connect(tmp_path / "finance.db")
+    old.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, date TEXT NOT NULL, "
+                "amount_cents INTEGER NOT NULL, fingerprint TEXT NOT NULL)")
+    old.execute("INSERT INTO transactions (account_id, date, amount_cents, fingerprint) VALUES (1, '2026-01-05', -500000, 'x')")
+    old.commit()
+    old.close()
+    db.init_db()
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT spread_months FROM transactions").fetchone()["spread_months"] == 1
+    db.init_db()                                                       # running it again is harmless
+
+
 def test_photo_payslip_through_fake_llm(client, monkeypatch):
     from app import llm
 

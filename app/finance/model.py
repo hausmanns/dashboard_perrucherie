@@ -198,21 +198,22 @@ def build_household(scope: str | None = None, scenario_id: int | None = None, to
                      other_debts=other_debts, events=events, settings=settings, today=today,
                      single_parent=len(adults) == 1 and bool(kids))
     if member is not None:
-        hh = _individual(hh, member)
+        hh = _individual(hh, member, spending)
     return hh
 
 
-def _individual(hh: S.Household, member_id: int) -> S.Household:
-    """One adult alone with their share of the household costs (independent finances)."""
+def _individual(hh: S.Household, member_id: int, spending: dict | None = None) -> S.Household:
+    """One adult alone (independent finances): their own budget lines + their share of the shared
+    costs, split by income or equally (`spending_split`, see metrics.split_by)."""
     me = next((a for a in hh.adults if a.id == member_id), None)
     if me is None:
         raise ValueError("unknown adult")
-    others = [a for a in hh.adults if a.id != member_id]
-    if hh.settings.get("spending_split") == "equal" or not others:
-        share = 1 / len(hh.adults)
-    else:
-        tot = sum(a.salary + a.side_income for a in hh.adults)
-        share = (me.salary + me.side_income) / tot if tot > 0 else 1 / len(hh.adults)
+    share = metrics.split_by({a.id: a.salary + a.side_income for a in hh.adults},
+                             hh.settings.get("spending_split"))[member_id]
+    personal = (spending or {}).get("personal") or {}
+    personal_rent = (spending or {}).get("personal_rent") or {}
+    my_spending = personal.get(member_id, 0.0) + (hh.spending - sum(personal.values())) * share
+    my_rent = personal_rent.get(member_id, 0.0) + (hh.rent - sum(personal_rent.values())) * share
     s = json.loads(json.dumps(hh.settings))
     cc = s.setdefault("child_costs", {})
     for k in ("0-3", "4-12", "13-17", "18-24", "childcare_monthly", "afterschool_monthly"):
@@ -223,7 +224,7 @@ def _individual(hh: S.Household, member_id: int) -> S.Household:
     s["child_tax_split"] = split if idx == 0 else 1 - split
     for pr in hh.properties:
         pr.owners = {member_id: pr.owners.get(member_id, 0.0)}
-    return S.Household(adults=[me], kids=hh.kids, spending=hh.spending * share, rent=hh.rent * share,
+    return S.Household(adults=[me], kids=hh.kids, spending=my_spending, rent=my_rent,
                        properties=[pr for pr in hh.properties if pr.owners.get(member_id)],
                        other_debts=hh.other_debts * share,
                        events=[e for e in hh.events if e.member_id in (None, member_id)],

@@ -441,6 +441,7 @@ class TxIn(BaseModel):
     category: str = ""
     currency: Optional[str] = None
     note: str = ""
+    spread_months: int = Field(1, ge=1, le=metrics.MAX_SPREAD)
 
 
 class TxUpdate(BaseModel):
@@ -449,6 +450,8 @@ class TxUpdate(BaseModel):
     is_transfer: Optional[bool] = None
     member_id: Optional[int] = None
     note: Optional[str] = None
+    # count it over N months from its month (yearly premium → 12); 1 = only its own month
+    spread_months: Optional[int] = Field(None, ge=1, le=metrics.MAX_SPREAD)
 
 
 def _tx(row) -> dict:
@@ -488,10 +491,12 @@ def create_transaction(t: TxIn):
     res = ledger.import_transactions(t.account_id, [{"date": t.date, "amount": Decimal(str(t.amount)),
                                                      "description": t.description, "counterparty": t.counterparty,
                                                      "currency": t.currency, "reference": f"manual-{_now()}"}])
-    if t.category:
+    if t.category or t.spread_months > 1:
         with db.get_conn() as conn:
             row = conn.execute("SELECT id FROM transactions WHERE import_id = ?", (res["import_id"],)).fetchone()
-        if row:
+            if row and t.spread_months > 1:
+                conn.execute("UPDATE transactions SET spread_months = ? WHERE id = ?", (t.spread_months, row["id"]))
+        if row and t.category:
             ledger.set_category(row["id"], t.category, learn=False)
     return res
 
@@ -512,6 +517,8 @@ def update_transaction(tx_id: int, u: TxUpdate):
             conn.execute("UPDATE transactions SET member_id = ? WHERE id = ?", (u.member_id or None, tx_id))
         if u.note is not None:
             conn.execute("UPDATE transactions SET note = ? WHERE id = ?", (u.note, tx_id))
+        if u.spread_months is not None:
+            conn.execute("UPDATE transactions SET spread_months = ? WHERE id = ?", (u.spread_months, tx_id))
         if u.is_transfer is not None and u.category is None:
             conn.execute("UPDATE transactions SET is_transfer = ? WHERE id = ?", (int(u.is_transfer), tx_id))
         row = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
@@ -572,32 +579,66 @@ def delete_rule(rule_id: int):
 
 
 @router.get("/budget")
-def get_budget():
-    """Planned monthly amount per category next to the 12-month actual average."""
+def get_budget(scope: str = "household"):
+    """Planned monthly amount per category next to the 12-month actual average.
+
+    Each row has `common` (the shared part), `personal` {member_id: amount} and `planned`,
+    what the scope spends: for the household, common + every personal line; for one adult
+    (`member:<id>`), their own line + `common_share` (their `share` of the common part).
+    `actual` follows the scope too (see metrics._tx_rows for who an operation counts for).
+    """
+    member = metrics.parse_scope(scope)
     with db.get_conn() as conn:
-        planned = {r["category"]: from_cents(r["monthly_cents"]) for r in conn.execute("SELECT * FROM budget")}
-    cf = metrics.cashflow(None, 12)
+        common, personal = metrics.budget_lines(conn)
+        shares = metrics.common_shares(conn)
+        adult_ids = [a["id"] for a in metrics.adults(conn)]
+    if member is not None and member not in adult_ids:
+        raise HTTPException(404, "adulte inconnu")
+    share = shares.get(member, 0.0) if member is not None else None
+    cf = metrics.cashflow(scope, 12)
     n = max(1, cf["months_with_data"])
     actual = {k: v / n for k, v in cf["by_category"].items()}
     rows = []
     for k, c in CATEGORIES.items():
         if c["type"] != "expense":
             continue
-        rows.append({"category": k, **c, "planned": planned.get(k, 0.0), "actual": actual.get(k)})
-    return {"rows": rows, "planned_total": sum(planned.values()),
+        com = common.get(k, 0.0)
+        pers = {mid: personal.get(mid, {}).get(k, 0.0) for mid in adult_ids}
+        if member is None:
+            planned, com_share = com + sum(pers.values()), None
+        else:
+            com_share = com * share
+            planned = pers[member] + com_share
+        rows.append({"category": k, **c, "common": com, "personal": pers, "common_share": com_share,
+                     "planned": planned, "actual": actual.get(k)})
+    return {"scope": scope, "member_id": member, "share": share, "shares": shares,
+            "split": db.get_settings().get("spending_split", "income"),
+            "rows": rows, "planned_total": sum(r["planned"] for r in rows),
             "actual_total": (cf["spending"] / n) if cf["months_with_data"] else None,
             "months_with_data": cf["months_with_data"], "profile": metrics.spending_profile()}
 
 
 @router.put("/budget")
-def put_budget(values: dict[str, float]):
+def put_budget(values: dict[str, float], member_id: Optional[int] = None):
+    """Set planned amounts per month, {category: CHF}. Without `member_id`: the shared part
+    (« Commun »); with it: that adult's personal part. 0 empties a line."""
     with db.get_conn() as conn:
+        if member_id is not None and member_id not in [a["id"] for a in metrics.adults(conn)]:
+            raise HTTPException(404, "adulte inconnu")
         for k, v in values.items():
             if k not in CATEGORIES:
                 continue
-            conn.execute("INSERT INTO budget (category, monthly_cents) VALUES (?, ?) ON CONFLICT(category) DO UPDATE "
-                         "SET monthly_cents = excluded.monthly_cents", (k, to_cents(max(0.0, float(v or 0)))))
-    return get_budget()
+            cents = to_cents(max(0.0, float(v or 0)))
+            if member_id is None:
+                conn.execute("INSERT INTO budget (category, monthly_cents) VALUES (?, ?) ON CONFLICT(category) "
+                             "DO UPDATE SET monthly_cents = excluded.monthly_cents", (k, cents))
+            elif cents:
+                conn.execute("INSERT INTO budget_personal (category, member_id, monthly_cents) VALUES (?, ?, ?) "
+                             "ON CONFLICT(category, member_id) DO UPDATE SET monthly_cents = excluded.monthly_cents",
+                             (k, member_id, cents))
+            else:
+                conn.execute("DELETE FROM budget_personal WHERE category = ? AND member_id = ?", (k, member_id))
+    return get_budget("household" if member_id is None else f"member:{member_id}")
 
 
 # --------------------------------------------------------------------------- goals
@@ -1184,7 +1225,7 @@ def reset(confirm: str = ""):
         raise HTTPException(400, "ajoutez ?confirm=EFFACER")
     with db.get_conn() as conn:
         for t in ("transactions", "snapshots", "holdings", "imports", "incomes", "events", "scenarios", "goals",
-                  "budget", "rules", "documents", "accounts", "members", "xp_events", "badges", "checkins",
+                  "budget", "budget_personal", "rules", "documents", "accounts", "members", "xp_events", "badges", "checkins",
                   "tax_bills", "settings"):
             conn.execute(f"DELETE FROM {t}")
     for f in db.docs_dir().glob("*"):
@@ -1209,4 +1250,5 @@ def summary() -> dict:
         "altitude": g["altitude"]["meters"], "peak": g["altitude"]["last_peak"]["name"],
         "level": g["level"], "streak": g["streak"],
         "quests": [{"title": q["title"], "emoji": q["emoji"]} for q in g["quests"][:3]],
+        "quest_count": len(g["quests"]),  # the tab badge: all open quests, not just the 3 shown
     }

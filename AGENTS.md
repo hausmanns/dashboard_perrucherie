@@ -97,10 +97,17 @@ local network. Current features:
    CSV, broker CSV, PDF/photo via a **local-first LLM**, `app/llm.py`) go
    upload → review → apply. Gamified: altitude, XP, badges, quests, monthly
    check-in. Tests: `pip install -r requirements-dev.txt && pytest tests/finance`
-   (375 tests, incl. every row of the official IFD 2026 table). Key endpoints:
+   (379 tests, incl. every row of the official IFD 2026 table). Key endpoints:
    `GET /api/finance/overview?scope=household|member:<id>`, `/projection`,
    `/montecarlo`, `/accounts`, `POST /checkin`, `POST /documents` (multipart
-   `files`) → `POST /documents/{id}/apply`, `/transactions`, `/budget`,
+   `files`) → `POST /documents/{id}/apply`, `/transactions`
+   (`PUT /transactions/{id} {spread_months: 1–24}` counts an operation 1/N in
+   its month and the N-1 after — a yearly premium → 12; only months with
+   statements get a part), `/budget`
+   (`GET ?scope=`; `PUT {category: CHF}` sets the shared « Commun » lines,
+   `PUT ?member_id=<adult>` that adult's personal lines — one adult's view and
+   plan = their lines + their share of Commun; a category budgeted only as
+   Commun counts as shared in the statements, whoever paid),
    `/goals`, `/events`, `/scenarios/compare`, `POST /calc/tax`,
    `GET /calc/capital-tax`, `GET /calc/avs`, `/calibration`, `POST /onboarding`.
    Telegram: `/fire` (no amounts), monthly check-in reminder; prices/FX/CPI

@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     category_source TEXT NOT NULL DEFAULT '',     -- rule | builtin | llm | manual | import
     is_transfer     INTEGER NOT NULL DEFAULT 0,   -- between own accounts: never income/spending
     member_id       INTEGER,                      -- who it concerns (NULL = account owners)
+    spread_months   INTEGER NOT NULL DEFAULT 1,   -- counted over N months from its month (yearly premium → 12)
     import_id       INTEGER,
     fingerprint     TEXT NOT NULL,                -- dedup key (see importers.fingerprint)
     note            TEXT NOT NULL DEFAULT '',
@@ -137,9 +138,20 @@ CREATE TABLE IF NOT EXISTS rules (
 );
 
 -- Planned spending per category (onboarding estimate, then compared to actuals).
+-- This is the shared part (« Commun »: rent, groceries…), split between the adults
+-- by the `spending_split` setting in an individual view.
 CREATE TABLE IF NOT EXISTS budget (
     category      TEXT PRIMARY KEY,
     monthly_cents INTEGER NOT NULL DEFAULT 0
+);
+
+-- The personal part: what one adult spends alone (sport, phone…), on top of the shared part.
+-- Household budget = `budget` + every row here; one adult = their rows + their share of `budget`.
+CREATE TABLE IF NOT EXISTS budget_personal (
+    category      TEXT NOT NULL,
+    member_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    monthly_cents INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (category, member_id)
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -344,11 +356,22 @@ def docs_dir() -> Path:
     return data_dir() / "docs"
 
 
+# Columns added after a table was first created: CREATE TABLE IF NOT EXISTS skips old tables.
+ADDED_COLUMNS = {
+    "transactions": {"spread_months": "INTEGER NOT NULL DEFAULT 1"},
+}
+
+
 def init_db() -> None:
     data_dir().mkdir(parents=True, exist_ok=True)
     docs_dir().mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        for table, cols in ADDED_COLUMNS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, ddl in cols.items():
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 @contextmanager

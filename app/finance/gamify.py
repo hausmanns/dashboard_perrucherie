@@ -265,7 +265,8 @@ def quests(projection: dict | None = None) -> list[dict]:
         adults_ = db.rows(conn.execute("SELECT * FROM members WHERE kind = 'adult'"))
         incomes = db.rows(conn.execute("SELECT * FROM incomes WHERE kind = 'salary'"))
         bills = conn.execute("SELECT COUNT(*) c FROM tax_bills").fetchone()["c"]
-        budget = conn.execute("SELECT COUNT(*) c FROM budget WHERE monthly_cents > 0").fetchone()["c"]
+        budget = conn.execute("SELECT (SELECT COUNT(*) FROM budget WHERE monthly_cents > 0) "
+                              "+ (SELECT COUNT(*) FROM budget_personal WHERE monthly_cents > 0) c").fetchone()["c"]
         done = {r["ref"] for r in conn.execute("SELECT ref FROM xp_events WHERE kind = 'quest'")}
     if uncategorized:
         out.append({"id": "categorize", "kind": "categorize", "emoji": "🏷️", "xp": min(100, uncategorized),

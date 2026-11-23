@@ -81,11 +81,12 @@ function fcLegend(items) {
     `<span><i style="background:${it.color}${it.dashed ? ";height:2px;border-radius:0" : ""}"></i>${fcEsc(it.label)}</span>`).join("")}</div>`;
 }
 
-/** Wrap a chart with a « Tableau » toggle that shows the same data as a table. */
-function fcFrame(el, { title, sub, legend, table }) {
+/** Wrap a chart with a « Tableau » toggle that shows the same data as a table.
+ *  `help`: trusted HTML put after the title (finance.js passes its « ? » button). */
+function fcFrame(el, { title, sub, help, legend, table }) {
   el.classList.add("fc");
   el.innerHTML = `
-    ${title ? `<div class="fc-head"><div><h4>${fcEsc(title)}</h4>${sub ? `<p>${sub}</p>` : ""}</div>
+    ${title ? `<div class="fc-head"><div><h4>${fcEsc(title)}${help || ""}</h4>${sub ? `<p>${sub}</p>` : ""}</div>
       ${table ? `<button type="button" class="fc-table-btn" aria-expanded="false">Tableau</button>` : ""}</div>` : ""}
     ${legend || ""}
     <div class="fc-plot"></div>
@@ -118,7 +119,7 @@ function fcArea(el, opts) {
   // a series that is zero everywhere (no property, no pension yet…) is left out entirely
   const series = opts.series.filter((s) => s.values && s.values.some((v) => v != null && v !== 0));
   const plot = fcFrame(el, {
-    title: opts.title, sub: opts.sub,
+    title: opts.title, sub: opts.sub, help: opts.help,
     legend: fcLegend([...(opts.band ? [{ label: opts.band.label, color: opts.band.color + "40" }] : []),
       ...series.map((s) => ({ label: s.label, color: s.color, dashed: s.dashed }))]),
     table: () => [["", ...series.map((s) => s.label)],
@@ -227,7 +228,7 @@ function fcArea(el, opts) {
 function fcColumns(el, opts) {
   const series = opts.series;
   const plot = fcFrame(el, {
-    title: opts.title, sub: opts.sub, legend: fcLegend(series.map((s) => ({ label: s.label, color: s.color }))),
+    title: opts.title, sub: opts.sub, help: opts.help, legend: fcLegend(series.map((s) => ({ label: s.label, color: s.color }))),
     table: () => [["", ...series.map((s) => s.label)], ...opts.x.map((x, i) => [String(x), ...series.map((s) => opts.fmtTable ? opts.fmtTable(s.values[i]) : fcChf(s.values[i]))])],
   });
   const W = fcWidth(el), H = opts.height || 220, m = { l: 48, r: 10, t: 12, b: 28 };
@@ -294,7 +295,7 @@ function fcColumns(el, opts) {
 function fcHBars(el, opts) {
   const items = opts.items.filter((it) => it.value > 0 || it.ref > 0);
   const plot = fcFrame(el, {
-    title: opts.title, sub: opts.sub,
+    title: opts.title, sub: opts.sub, help: opts.help,
     legend: opts.refLabel ? `<div class="fc-legend"><span><i style="background:${opts.color}"></i>${fcEsc(opts.valueLabel || "Réel")}</span><span><i class="fc-tick-key"></i>${fcEsc(opts.refLabel)}</span></div>` : "",
     table: () => [["", opts.valueLabel || "Réel", ...(opts.refLabel ? [opts.refLabel] : [])],
       ...items.map((it) => [it.label, fcChf(it.value), ...(opts.refLabel ? [fcChf(it.ref)] : [])])],
@@ -325,7 +326,7 @@ function fcHBars(el, opts) {
 function fcSegmented(el, parts, opts = {}) {
   const tot = parts.reduce((a, p) => a + Math.max(0, p.value), 0) || 1;
   el.classList.add("fc");
-  el.innerHTML = `${opts.title ? `<div class="fc-head"><div><h4>${fcEsc(opts.title)}</h4>${opts.sub ? `<p>${opts.sub}</p>` : ""}</div></div>` : ""}
+  el.innerHTML = `${opts.title ? `<div class="fc-head"><div><h4>${fcEsc(opts.title)}${opts.help || ""}</h4>${opts.sub ? `<p>${opts.sub}</p>` : ""}</div></div>` : ""}
     <div class="fc-seg">${parts.filter((p) => p.value > 0).map((p, i) =>
       `<span style="flex:${p.value / tot};background:${p.color}" data-i="${i}" title="${fcEsc(p.label)} · ${fcChf(p.value)}"></span>`).join("")}</div>
     <div class="fc-seg-legend">${parts.filter((p) => p.value > 0).map((p) =>
@@ -337,7 +338,7 @@ function fcSegmented(el, parts, opts = {}) {
 /** opts: { sources: [{label, value}], targets: [{label, value, color}], title, sub } — two columns. */
 function fcSankey(el, opts) {
   const plot = fcFrame(el, {
-    title: opts.title, sub: opts.sub,
+    title: opts.title, sub: opts.sub, help: opts.help,
     table: () => [["Flux", "Montant"], ...opts.sources.map((s) => ["↦ " + s.label, fcChf(s.value)]), ...opts.targets.map((t) => [t.label + " ↤", fcChf(t.value)])],
   });
   const W = fcWidth(el), gap = 6;
@@ -397,78 +398,139 @@ function fcSankey(el, opts) {
 function fcMountain(el, opts) {
   const W = fcWidth(el, 760), H = Math.round(Math.min(300, Math.max(200, W * 0.36)));
   const p = Math.max(0, Math.min(1, opts.progress || 0));
-  // ridge: a path from bottom-left to the summit on the right, through the peaks
-  const peaks = opts.peaks || [];
-  const px = (t) => 24 + t * (W - 90);
-  const py = (t) => H - 26 - t * (H - 70);
-  const pts = [[px(0), py(0)]];
-  peaks.forEach((pk, i) => {
-    if (i === 0) return;
-    const t = pk.progress;
-    const prev = peaks[i - 1].progress;
-    const dip = prev + (t - prev) * 0.55;
-    pts.push([px(dip), py(dip) + 10 + (i % 2) * 8]);
-    pts.push([px(t), py(t)]);
-  });
-  const ridge = pts.map((q, i) => `${i ? "L" : "M"}${q[0].toFixed(1)},${q[1].toFixed(1)}`).join("");
+  const peaks = (opts.peaks || []).slice().sort((a, b) => a.progress - b.progress);
+  const f1 = (v) => v.toFixed(1);
+  const line = (pts) => pts.map((q, i) => `${i ? "L" : "M"}${f1(q[0])},${f1(q[1])}`).join("");
+
+  // Geometry. The climb runs up the left flank, from the lake shore to the summit.
+  // x follows a concave curve, so the slope is gentle at the bottom and steep near the top.
+  const shoreX = Math.max(40, W * 0.09), shoreY = H - 20;
+  const topX = W * 0.76, topY = 30;
+  const X = (t) => shoreX + (topX - shoreX) * (1.5 * t - 0.5 * t * t);
+  const Y = (t) => shoreY - t * (shoreY - topY);
+
+  // Left ridge: each checkpoint is a small top, with a col before it.
+  // The col never drops below the previous top, so the line never dips into the lake.
+  const ridge = [[X(0), Y(0)]];
+  for (let i = 1; i < peaks.length; i++) {
+    const a = peaks[i - 1].progress, b = peaks[i].progress;
+    const gap = Y(a) - Y(b);
+    if (gap > 4) {
+      const m = (a + b) / 2;
+      ridge.push([X(m), Y(m) + Math.min(9, gap * 0.45)]);
+    }
+    ridge.push([X(b), Y(b)]);
+  }
+  if (!peaks.length || peaks[peaks.length - 1].progress < 1) ridge.push([X(1), Y(1)]);
+  const summit = ridge[ridge.length - 1];
+
+  // Right flank: a shoulder, then down to the right edge.
+  const rw = W - topX, rh = shoreY - topY;
+  const flank = [
+    [topX + rw * 0.16, topY + rh * 0.13], [topX + rw * 0.3, topY + rh * 0.08], [topX + rw * 0.52, topY + rh * 0.3],
+    [topX + rw * 0.72, topY + rh * 0.36], [W, topY + rh * 0.56],
+  ];
+  const outline = [[shoreX - 16, H], ...ridge, ...flank, [W, H]];
+
+  // Snow cap, above about 3'200 m. It starts where the ridge stays above the snow line for good.
+  const snowY = Y(0.66);
+  let k = ridge.length - 1;
+  while (k > 0 && ridge[k - 1][1] < snowY) k--;
+  const cross = (a, b) => [a[0] + (b[0] - a[0]) * (snowY - a[1]) / (b[1] - a[1] || 1), snowY];
+  const snowLeft = k > 0 ? cross(ridge[k - 1], ridge[k]) : ridge[0];
+  const fall = [summit, ...flank];
+  let j = 0;
+  while (j < fall.length - 1 && fall[j + 1][1] < snowY) j++;
+  const snowRight = j < fall.length - 1 ? cross(fall[j], fall[j + 1]) : fall[j];
+  const teeth = [];
+  const nTeeth = Math.max(4, Math.round((snowRight[0] - snowLeft[0]) / 16));
+  for (let i = nTeeth - 1; i >= 1; i--) {
+    teeth.push([snowLeft[0] + (snowRight[0] - snowLeft[0]) * i / nTeeth, snowY + (i % 2 ? 9 : 2)]);
+  }
+  const snow = [snowLeft, ...ridge.slice(k), ...flank.slice(0, j), snowRight, ...teeth];
+
+  // Shadow side: from the summit down to the base, to the right.
+  const shade = [summit, ...flank, [W, H], [topX - W * 0.05, H], [topX + rw * 0.05, topY + rh * 0.45]];
+
+  // Far range and foothills, as fixed fractions of the box.
+  const far = [[0, H * 0.62], [W * 0.1, H * 0.42], [W * 0.2, H * 0.55], [W * 0.33, H * 0.3], [W * 0.45, H * 0.48],
+    [W * 0.56, H * 0.36], [W * 0.66, H * 0.5], [W * 0.88, H * 0.22], [W, H * 0.4], [W, H], [0, H]];
+
+  // Position on the ridge for a progress value (by x).
   const at = (t) => {
-    // position on the ridge polyline for progress t (by x)
-    const x = px(t);
-    for (let i = 1; i < pts.length; i++) {
-      if (pts[i][0] >= x) {
-        const a = pts[i - 1], b = pts[i];
+    const x = X(t);
+    for (let i = 1; i < ridge.length; i++) {
+      if (ridge[i][0] >= x - 1e-6) {
+        const a = ridge[i - 1], b = ridge[i];
         const f = (x - a[0]) / (b[0] - a[0] || 1);
         return [x, a[1] + f * (b[1] - a[1])];
       }
     }
-    return pts[pts.length - 1];
+    return summit;
   };
-  const climber = at(p);
-  const doneIdx = pts.findIndex((q) => q[0] > climber[0]);
-  const done = pts.slice(0, doneIdx < 0 ? pts.length : doneIdx).concat([climber]);
-  const trail = done.map((q, i) => `${i ? "L" : "M"}${q[0].toFixed(1)},${q[1].toFixed(1)}`).join("");
+  const me = at(p);
+  const trail = ridge.filter((q) => q[0] < me[0]).concat([me]);
+
   let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="${fcEsc(opts.label || "")}">
     <defs>
-      <linearGradient id="fc-sky" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e4e9f5"/><stop offset="1" stop-color="#fffefa"/></linearGradient>
-      <linearGradient id="fc-rock" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#c9cfdc"/><stop offset="1" stop-color="#eef0e6"/></linearGradient>
+      <linearGradient id="fc-sky" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#dfe7f4"/><stop offset="1" stop-color="#fbf8f0"/></linearGradient>
+      <linearGradient id="fc-rock" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#aab4c8"/><stop offset="0.55" stop-color="#c8cfdb"/><stop offset="1" stop-color="#dfe4d3"/></linearGradient>
+      <linearGradient id="fc-lake" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#a9cbe6"/><stop offset="1" stop-color="#cfe2f1"/></linearGradient>
     </defs>
     <rect width="${W}" height="${H}" fill="url(#fc-sky)" rx="8"/>
-    <path d="M0,${H - 36} Q${W * 0.25},${H - 120} ${W * 0.45},${H - 70} T${W},${H - 110} V${H} H0Z" fill="#dfe6d5" opacity="0.7"/>
-    <path d="${ridge} L${W - 66},${H} L${px(0)},${H} Z" fill="url(#fc-rock)" stroke="#9aa3b5" stroke-width="1.5" stroke-linejoin="round"/>
-    <path d="M${px(1) - 34},${py(1) + 26} L${px(1)},${py(1)} L${px(1) + 30},${py(1) + 30} L${px(1) + 12},${py(1) + 22} L${px(1) - 4},${py(1) + 32} L${px(1) - 18},${py(1) + 24} Z" fill="#fff" opacity="0.9"/>
-    <rect x="0" y="${H - 22}" width="${W}" height="22" fill="#b9d3e8" opacity="0.65"/>
-    <path d="${trail}" fill="none" stroke="#eb6834" stroke-width="3" stroke-linecap="round" stroke-dasharray="1 7"/>`;
-  // labels: the summit first, then right to left, skipping any that would collide
-  const placed = [[climber[0] - 16, climber[0] + 16, climber[1]]];
-  const fits = (x0, x1, y) => !placed.some(([a, b, yy]) => Math.abs(yy - y) < 13 && x0 < b + 4 && x1 > a - 4);
+    <path d="${line(far)}Z" fill="#d6ddeb"/>
+    <path d="M0,${H * 0.8} Q${W * 0.18},${H * 0.6} ${W * 0.4},${H * 0.78} T${W * 0.8},${H * 0.82} V${H} H0Z" fill="#d9e3cc"/>
+    <rect x="0" y="${shoreY}" width="${W}" height="${H - shoreY}" fill="url(#fc-lake)"/>
+    <path d="M8,${shoreY + 7} h14 M${shoreX * 0.35},${shoreY + 13} h12" stroke="#fff" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
+    <path d="${line(outline)}Z" fill="url(#fc-rock)"/>
+    <path d="${line(snow)}Z" fill="#fbfcfe"/>
+    <path d="${line(shade)}Z" fill="#25314b" opacity="0.08"/>
+    <path d="${line([...ridge, ...flank])}" fill="none" stroke="#7d889f" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${line(trail)}" fill="none" stroke="#eb6834" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  // Checkpoints (the first one is the lake shore, the start).
+  peaks.forEach((pk, i) => {
+    if (i === 0 || pk.progress >= 1) return;
+    const q = at(pk.progress);
+    const reached = pk.progress <= p + 1e-9;
+    svg += `<circle cx="${f1(q[0])}" cy="${f1(q[1])}" r="3.5" fill="${reached ? FC.ink : "#fffefa"}" stroke="${FC.ink}" stroke-width="1.5"><title>${fcEsc(pk.name)} · ${fcNum(pk.meters)} m</title></circle>`;
+  });
+
+  // Labels sit above and to the left of their point: the ridge there is lower, so they never cross it.
+  // Order: summit, next goal, then from the top down. A label that would touch another one is skipped.
   const fs = W > 600 ? 11 : 10;
-  const labels = [];
-  for (let i = peaks.length - 1; i >= 1; i--) {
+  // boxes: [x0, x1, y0, y1, owner] — a label may touch its own dot.
+  const boxes = [[me[0] - 12, me[0] + 12, me[1] - 12, me[1] + 12, -1], [summit[0] - 2, summit[0] + 18, summit[1] - 24, summit[1], -1]];
+  peaks.forEach((pk, i) => { if (i) { const q = at(pk.progress); boxes.push([q[0] - 5, q[0] + 5, q[1] - 5, q[1] + 5, i]); } });
+  const free = (b, i) => !boxes.some((o) => o[4] !== i && b[0] < o[1] + 3 && b[1] > o[0] - 3 && b[2] < o[3] + 1 && b[3] > o[2] - 1);
+  const nextIdx = peaks.findIndex((pk) => pk.progress > p + 1e-9);
+  const order = peaks.map((_, i) => i).filter((i) => i > 0).sort((a, b) => {
+    const rank = (i) => (i === peaks.length - 1 ? 0 : i === nextIdx ? 1 : 2);
+    return rank(a) - rank(b) || b - a;
+  });
+  order.forEach((i) => {
     const pk = peaks[i];
     const q = at(pk.progress);
     const name = pk.name.replace("Cathédrale de ", "");
-    const w = name.length * fs * 0.56;
-    const ly = i === peaks.length - 1 ? q[1] - 30 : q[1] - 10;
-    const x0 = Math.min(Math.max(q[0] - w / 2, 4), W - w - 4);
-    if (i === peaks.length - 1 || fits(x0, x0 + w, ly)) {
-      placed.push([x0, x0 + w, ly]);
-      labels.push({ x: x0 + w / 2, y: ly, name, reached: pk.progress <= p + 1e-9 });
-    }
-  }
-  peaks.forEach((pk, i) => {
-    if (i === 0) return;
-    const q = at(pk.progress);
+    const w = name.length * fs * 0.55;
+    const right = Math.max(q[0] - 6, w + 4);
+    const base = q[1] - 7;
+    const b = [right - w, right, base - fs, base + 2, i];
+    if (i !== peaks.length - 1 && !free(b, i)) return;
+    boxes.push(b);
     const reached = pk.progress <= p + 1e-9;
-    svg += `<circle cx="${q[0]}" cy="${q[1]}" r="${i === peaks.length - 1 ? 6 : 4}" fill="${reached ? "#25314b" : "#fffefa"}" stroke="#25314b" stroke-width="1.5"><title>${fcEsc(pk.name)} · ${fcNum(pk.meters)} m</title></circle>`;
+    svg += `<text x="${f1(right)}" y="${f1(base)}" text-anchor="end" font-size="${fs}" font-weight="${i === nextIdx || i === peaks.length - 1 ? 700 : 400}" fill="${reached || i === nextIdx ? FC.ink : FC.soft}" font-family='${FC.font}' paint-order="stroke" stroke="#eef2f8" stroke-width="3" stroke-linejoin="round">${fcEsc(name)}</text>`;
   });
-  labels.forEach((l) => {
-    svg += `<text x="${l.x}" y="${l.y}" text-anchor="middle" font-size="${fs}" fill="${l.reached ? FC.ink : FC.muted}" font-family='${FC.font}' paint-order="stroke" stroke="#f2f4f8" stroke-width="3">${fcEsc(l.name)}</text>`;
-  });
-  const flag = at(1);
-  svg += `<path d="M${flag[0]},${flag[1] - 6} v-18 l14,5 l-14,5" fill="#e34948" stroke="#25314b" stroke-width="1.2"/>`;
-  svg += `<g class="fc-climber" transform="translate(${climber[0]},${climber[1]})">
-      <circle r="13" fill="#fffefa" stroke="#25314b" stroke-width="2"/>
-      <text y="5" text-anchor="middle" font-size="15">🧗</text></g>`;
+  if (W >= 400) {
+    svg += `<text x="${f1(shoreX * 0.45)}" y="${H - 5}" text-anchor="middle" font-size="9" font-style="italic" fill="#4f7397" font-family='${FC.font}'>Léman</text>`;
+  }
+
+  // Flag on the summit, and the climber: an orange dot with a soft halo (no emoji, they render badly in SVG).
+  svg += `<path d="M${f1(summit[0])},${f1(summit[1])} v-22" stroke="${FC.ink}" stroke-width="1.5"/>
+    <path d="M${f1(summit[0])},${f1(summit[1] - 22)} l15,5 l-15,5 Z" fill="#e34948"/>
+    <g class="fc-climber" transform="translate(${f1(me[0])},${f1(me[1])})"><title>Vous êtes ici</title>
+      <circle class="fc-climber-halo" r="11" fill="#eb6834" opacity="0.22"/>
+      <circle r="6.5" fill="#eb6834" stroke="#fffefa" stroke-width="2.5"/></g>`;
   svg += `</svg>`;
   el.innerHTML = svg;
 }
