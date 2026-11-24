@@ -18,8 +18,9 @@ Layout
 - `metrics.py`    net worth, cash flow, savings rate, freedom days, history
 - `gamify.py`     XP, levels (altitude), badges, quests, streaks
 - `categorize.py` transaction categories, rules, learning from corrections
-- `importers/`    CAMT.053, CSV (bank / broker profiles), PDF & images via LLM
+- `importers/`    CAMT.053, CSV (bank / broker profiles), PDF & images via LLM, OCR (Tesseract)
 - `documents.py`  upload → detect → parse → review → apply
+- `anonymize.py`  mode private_cloud: mask names/addresses/numbers here, check, restore the cloud's answer
 - `market.py`     prices (Yahoo/Stooq), FX (ECB), Swiss CPI (SNB) — cached
 - `backup.py`     encrypted export / import of the finance data
 

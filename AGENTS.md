@@ -95,7 +95,22 @@ local network. Current features:
    non-active contributions, LPP, 3a, capital-withdrawal tax, year-by-year
    projection, FI-year solver, seeded Monte Carlo. Documents (CAMT.053, bank
    CSV, broker CSV, PDF/photo via a **local-first LLM**, `app/llm.py`) go
-   upload → review → apply. Gamified: altitude, XP, badges, quests, monthly
+   upload → review → apply. Reading modes (Réglages → Lecture des documents,
+   `settings.llm.mode`): `local_first` (default), `local_only`, `cloud_only`,
+   and `private_cloud` — **the local model only masks, the cloud reads**
+   (`app/finance/anonymize.py`): the PDF's text, or Tesseract OCR here for a
+   scan/photo (never an image to the cloud); names, addresses, IBAN, AVS n°,
+   e-mail, phone, contract numbers, birth dates and the employer become tags
+   like `[PERSONNE_1]` (rules + the members' names/birth dates and accounts'
+   IBANs + `settings.privacy.always_mask` + a list from the local model, which
+   never rewrites the text, so amounts stay intact); a final re-scan blocks
+   the send if anything is left; status `masked` waits for the household's OK
+   (`settings.privacy.confirm`, default on; off = sent by itself only when
+   every check passed and the local model answered); OpenRouter gets only the
+   masked text (`provider.data_collection: deny`, model
+   `settings.llm.cloud_model`), the tags in its answer are put back here, then
+   the usual review. In that mode every other LLM call (categories, CSV
+   columns) stays local. Gamified: altitude, XP, badges, quests, monthly
    check-in. Tests: `pip install -r requirements-dev.txt && pytest tests/finance`
    (388 tests, incl. every row of the official IFD 2026 table). Positions keep
    ticker (`symbol`, Yahoo — the only id used for live prices), `isin` and
@@ -108,7 +123,13 @@ local network. Current features:
    `POST /documents/{id}/reparse {doc_type}` re-reads as another type, `""` =
    guess again) → `POST /documents/{id}/apply` (`GET /documents/{id}` also
    returns `debug`: what the LLM was sent, its thinking, raw answer, tokens and
-   time per provider tried — 🔍 in Documents), `/transactions`
+   time per provider tried — 🔍 in Documents; and `privacy` in private_cloud:
+   source, items `{tag, text, kind, source, on, count}`, `masked`, `check`,
+   `local`), private_cloud only: `POST /documents/{id}/mask {off: [tags],
+   extra: [text]}` (preview, nothing saved or sent) and `POST
+   /documents/{id}/send {off, extra, remember}` (409 when the final check still
+   finds something; `remember` adds `extra` to `always_mask`),
+   `GET /llm/status` (local server, cloud, `ocr`), `/transactions`
    (`PUT /transactions/{id} {spread_months: 1–24}` counts an operation 1/N in
    its month and the N-1 after — a yearly premium → 12; only months with
    statements get a part), `/budget`

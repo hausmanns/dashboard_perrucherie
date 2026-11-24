@@ -9,6 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# OCR for the finance documents in the « masked » mode: scans and photos are read
+# here (French, German, Italian, English) so only masked text goes to the cloud.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-fra tesseract-ocr-deu tesseract-ocr-ita \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first for layer caching.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

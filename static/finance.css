@@ -237,6 +237,25 @@
 .fin-doc .info small { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
 .fin-doc-review { box-shadow: inset 4px 0 0 var(--warn), var(--shadow); }
 .fin-doc-error { box-shadow: inset 4px 0 0 var(--danger), var(--shadow); }
+.fin-doc-masked { box-shadow: inset 4px 0 0 var(--info), var(--shadow); }
+/* private_cloud: the masked text before it leaves */
+.fin-mask-items { display: flex; flex-direction: column; gap: 0.15rem; max-height: 30vh; overflow: auto; margin: 0.4rem 0; }
+.fin-modal .fin-mask-item {
+  display: grid !important; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 0.5rem; align-items: center;
+  padding: 0.25rem 0.4rem; border-bottom: 1px dashed var(--line); font-weight: 500; font-size: 0.86rem;
+}
+.fin-modal .fin-mask-item input { width: auto !important; margin: 0 !important; }
+.fin-mask-item code { font-size: 0.74rem; background: var(--info-soft); color: var(--info); padding: 0 0.3rem; border-radius: var(--radius-xs); }
+.fin-mask-item .t { overflow-wrap: anywhere; }
+.fin-mask-item.off { opacity: 0.55; }
+.fin-mask-item.off .t { text-decoration: line-through; }
+mark.fin-mask { background: var(--info-soft); color: var(--info); font-weight: 700; padding: 0 0.1rem; border-radius: 3px; }
+.fin-mask-ok { color: var(--info); }
+.fin-private { border-left: 3px solid var(--info); padding-left: 0.7rem; margin: 0.4rem 0; }
+@media (max-width: 560px) {
+  .fin-modal .fin-mask-item { grid-template-columns: auto minmax(0, 1fr); }
+  .fin-mask-item small { grid-column: 2; }
+}
 .fin-doc-parsing, .fin-doc-pending { box-shadow: inset 4px 0 0 var(--accent), var(--shadow); }
 .fin-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 0.8rem; }
 .fin-check { font-size: 0.82rem; margin-top: 0.4rem; }

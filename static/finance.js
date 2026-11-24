@@ -1753,8 +1753,10 @@ async function finUpload(files) {
 async function finDocs(body) {
   const [docs, ai] = await Promise.all([api.get("/api/finance/documents"), api.get("/api/finance/llm/status").catch(() => null)]);
   if (!body.isConnected) return;
-  const statusLbl = { pending: "⏳ en attente", parsing: "🤖 lecture…", review: "👀 à vérifier", applied: "✅ appliqué", error: "⚠️ erreur", ignored: "🙈 ignoré" };
-  const aiLine = ai ? (ai.local.reachable
+  const statusLbl = { pending: "⏳ en attente", parsing: "🤖 lecture…", masked: "🔒 à vérifier avant envoi", review: "👀 à vérifier", applied: "✅ appliqué", error: "⚠️ erreur", ignored: "🙈 ignoré" };
+  const aiLine = ai ? (ai.mode === "private_cloud"
+    ? `🔒 Mode masqué : le texte est masqué ici (${ai.local.reachable ? `IA locale <b>${fe(ai.local.model)}</b>` : `<span class="fin-stale">IA locale injoignable : règles seules</span>`}${ai.ocr ? ` · ${ai.ocr.available ? "OCR prêt pour scans et photos" : `<span class="fin-stale">pas d'OCR : scans et photos impossibles</span>`}` : ""}), vous vérifiez, puis le cloud lit.${ai.cloud.configured ? "" : ` <span class="fin-stale">Pas de clé OpenRouter.</span>`} Les exports CAMT/CSV n'ont pas besoin d'IA.`
+    : ai.local.reachable
     ? `🟢 IA locale prête : <b>${fe(ai.local.model)}</b>${ai.local.model_installed === false ? ` <span class="fin-stale">— modèle pas installé (<code>ollama pull ${fe(ai.local.model)}</code>)</span>` : ""}`
     : `🟠 IA locale injoignable (${fe(ai.local.base_url)}). ${ai.mode !== "local_only" && ai.cloud.configured ? "Les PDF et photos passeront par le cloud (OpenRouter)." : "Les PDF et photos attendront."} Les exports CAMT/CSV n'ont pas besoin d'IA.`) : "";
   body.innerHTML = `
@@ -1779,7 +1781,8 @@ async function finDocs(body) {
           ${d.extracted?.summary ? `<small>${fe(d.extracted.summary)}</small>` : ""}${d.error ? `<small class="fin-stale">${fe(d.error)}</small>` : ""}</div>
         <div class="plan-actions">
           ${d.status === "review" ? `<button class="btn btn-primary btn-sm" data-review="${d.id}">Vérifier</button>` : ""}
-          ${["error", "review", "ignored"].includes(d.status) ? `<button class="btn btn-ghost btn-sm" data-reparse="${d.id}">Relire</button>` : ""}
+          ${d.status === "masked" ? `<button class="btn btn-primary btn-sm" data-privacy="${d.id}">Vérifier l'envoi 🔒</button>` : ""}
+          ${["error", "review", "ignored", "masked"].includes(d.status) ? `<button class="btn btn-ghost btn-sm" data-reparse="${d.id}">Relire</button>` : ""}
           ${d.has_debug ? `<button class="icon-btn" data-debug="${d.id}" title="Sous le capot : ce que l'IA a reçu, pensé et répondu">🔍</button>` : ""}
           <a class="icon-btn" href="/api/finance/documents/${d.id}/file" target="_blank" rel="noopener" title="Ouvrir">👁️</a>
           <button class="icon-btn" data-docdel="${d.id}" title="Supprimer">🗑️</button>
@@ -1787,6 +1790,7 @@ async function finDocs(body) {
       </div>`).join("") || `<p class="muted">Aucun document pour l'instant.</p>`}</div>`;
   $("#fin-pick").onclick = () => $("#fin-file-input").click();
   body.querySelectorAll("[data-review]").forEach((b) => b.onclick = () => finReview(+b.dataset.review));
+  body.querySelectorAll("[data-privacy]").forEach((b) => b.onclick = () => finPrivacy(+b.dataset.privacy));
   body.querySelectorAll("[data-reparse]").forEach((b) => b.onclick = async () => { await api.post(`/api/finance/documents/${b.dataset.reparse}/reparse`); finRenderTab(); });
   body.querySelectorAll("[data-debug]").forEach((b) => b.onclick = () => finDebug(+b.dataset.debug));
   body.querySelectorAll("[data-docdel]").forEach((b) => b.onclick = async () => {
@@ -1853,7 +1857,7 @@ async function finReview(id) {
   }
   const dlg = finModal(`
     <h3>${fe(d.doc_type_label || "Document")}</h3>
-    <p class="muted">${fe(d.filename)} · lu par ${fe(d.engine)}${ex.confidence != null && ex.confidence < 1 ? ` · confiance ${pct(ex.confidence)}` : ""}</p>
+    <p class="muted">${fe(d.filename)} · lu par ${fe(d.engine)}${ex.confidence != null && ex.confidence < 1 ? ` · confiance ${pct(ex.confidence)}` : ""}${ex.privacy ? ` · 🔒 envoyé masqué (${ex.privacy.masked} élément(s) caché(s))` : ""}</p>
     ${ex.summary ? `<p>${fe(ex.summary)}</p>` : ""}
     ${t && aiRead ? `<div class="fin-type-row"><label>Type de document<select id="fr-type">${Object.entries(fin.status.doc_types).map(([k, l]) => `<option value="${k}"${t === k ? " selected" : ""}>${fe(l)}</option>`).join("")}</select></label>
       <button type="button" class="btn btn-ghost btn-sm hidden" id="fr-reread">🔁 Relire comme ce type</button></div>` : ""}
@@ -1914,12 +1918,12 @@ async function finReview(id) {
   };
 }
 
-/* What the AI was sent, thought and answered — for debugging. `dbg` = document.debug (app/llm.py chat_json trace). */
-function finDebugHtml(dbg) {
+/* One block per model call: engine, time, tokens, thinking, raw answer (app/llm.py chat_json trace attempts). */
+function finTriesHtml(attempts) {
   const pre = (s) => `<pre class="fin-debug-pre">${fe(s)}</pre>`;
   const tokens = (u) => u && (u.prompt_tokens || u.completion_tokens)
     ? ` · ${fcNum(u.prompt_tokens || 0)} tokens lus → ${fcNum(u.completion_tokens || 0)} écrits` : "";
-  const tries = (dbg.attempts || []).map((a) => `
+  return (attempts || []).map((a) => `
     <div class="fin-debug-try">
       <p><b>${a.error ? "❌" : "✅"} ${fe(a.engine)}</b> <span class="muted">· ${fcNum(a.seconds, { dec: 1 })} s${tokens(a.usage)}</span></p>
       ${a.error ? `<p class="fin-stale">${fe(a.error)}</p>` : ""}
@@ -1927,11 +1931,100 @@ function finDebugHtml(dbg) {
         : a.error ? "" : `<p class="muted">Ce modèle ne donne pas sa réflexion.</p>`}
       ${a.raw ? `<details><summary>Réponse brute</summary>${pre(a.raw)}</details>` : ""}
     </div>`).join("");
+}
+
+/* What the AI was sent, thought and answered — for debugging. `dbg` = document.debug (app/llm.py chat_json trace,
+   + `mask` when the text was masked here first: app/finance/anonymize.py detect_local). */
+function finDebugHtml(dbg) {
+  const pre = (s) => `<pre class="fin-debug-pre">${fe(s)}</pre>`;
+  const tries = finTriesHtml(dbg.attempts);
+  const m = dbg.mask;
+  const mask = m ? `<div class="fin-debug-try">
+      <p><b>🔒 Masquage sur ce PC</b> <span class="muted">· ${fe(m.engine || "IA locale injoignable : règles seules")} · ${m.ok || 0}/${m.chunks || 0} extrait(s) · ${fcNum(m.seconds || 0, { dec: 1 })} s${m.refused ? ` · ${m.refused} proposition(s) refusée(s) (montant, date…)` : ""}</span></p>
+      ${(m.errors || []).map((e) => `<p class="fin-stale">${fe(e)}</p>`).join("")}
+      ${(m.attempts || []).length ? `<details><summary>Réponses de l'IA locale</summary>${finTriesHtml(m.attempts)}</details>` : ""}
+    </div>` : "";
   return `<div class="fin-debug">
-    <p class="muted">Envoyé : ${dbg.images ? `${dbg.images} image(s) + ` : ""}${fcNum((dbg.prompt || "").length)} caractères de texte</p>
+    <p class="muted">Envoyé : ${dbg.images ? `${dbg.images} image(s) + ` : ""}${fcNum((dbg.prompt || "").length)} caractères de texte${m ? " (masqué)" : ""}</p>
+    ${mask}
     ${tries || `<p class="muted">Aucun modèle n'a été essayé.</p>`}
-    <details><summary>Message envoyé (sans les images)</summary>${pre(dbg.prompt || "")}</details>
+    <details><summary>${m ? "Message envoyé au cloud (texte masqué)" : "Message envoyé (sans les images)"}</summary>${pre(dbg.prompt || "")}</details>
   </div>`;
+}
+
+/* Mode private_cloud: the masked text, before it leaves. `d.privacy` = app/finance/anonymize.py prepare(). */
+const FIN_MASK_KINDS = { person: "personne", address: "adresse", id: "numéro", iban: "IBAN", avs: "n° AVS", email: "e-mail", phone: "téléphone", contact: "contact", birthdate: "date de naissance", employer: "employeur", card: "carte", other: "privé" };
+const FIN_MASK_SOURCES = { known: "connu du foyer", list: "votre liste", rule: "règle", local: "IA locale", manual: "ajouté à la main" };
+
+async function finPrivacy(id) {
+  const d = await api.get(`/api/finance/documents/${id}`);
+  let p = d.privacy;
+  if (!p) { toast("Pas de texte masqué pour ce document", true); return; }
+  const src = p.source === "pdf-text" ? "texte du PDF" : p.source.startsWith("ocr") ? "OCR sur ce PC (Tesseract)" : p.source;
+  const loc = p.local || {};
+  const localLine = !loc.engine
+    ? `<p class="fin-stale">⚠️ L'IA locale n'a pas répondu : seules les règles et ce que le foyer connaît ont masqué. Relisez bien le texte.</p>`
+    : loc.errors?.length
+      ? `<p class="fin-stale">⚠️ IA locale ${fe(loc.engine)} : ${loc.ok}/${loc.chunks} extrait(s) lus. Le reste n'a été masqué que par les règles.</p>`
+      : `<p class="muted">🤖 IA locale ${fe(loc.engine)} : ${loc.chunks} extrait(s) lus en ${fcNum(loc.seconds || 0, { dec: 0 })} s.</p>`;
+  const manual = p.items.filter((i) => i.source === "manual").map((i) => i.text).join("\n");
+  const dlg = finModal(`
+    <h3>🔒 Avant l'envoi au cloud</h3>
+    <p class="muted">${fe(d.filename)} · lu par ${fe(src)}</p>
+    ${localLine}
+    ${d.error ? `<p class="fin-stale">${fe(d.error)}</p>` : ""}
+    <p>Seul ce texte part chez OpenRouter : pas le fichier, pas d'image. Les montants et les dates restent visibles : c'est ce que le modèle doit lire. Les vraies valeurs sont remises ici, à la réponse.</p>
+    <div id="fp-items"></div>
+    <label>Masquer aussi (un mot ou un nom par ligne)<textarea id="fp-extra" rows="2" placeholder="ex. votre nom de famille, votre rue">${fe(manual)}</textarea></label>
+    <label class="wz-check"><input type="checkbox" id="fp-remember" /> Toujours masquer ces mots (gardés dans Réglages)</label>
+    <p id="fp-check"></p>
+    <details open><summary>Texte qui sera envoyé</summary><pre class="fin-debug-pre fin-mask-pre" id="fp-text"></pre></details>
+    ${(loc.attempts || []).length ? `<details class="fin-debug-fold"><summary>🔍 Réponses de l'IA locale</summary><div class="fin-debug">${finTriesHtml(loc.attempts)}</div></details>` : ""}
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close>Plus tard</button>
+      <button type="button" class="btn btn-primary" id="fp-send">Envoyer au cloud ☁️</button>
+    </div>`, { wide: true });
+  const edits = () => ({
+    off: [...dlg.querySelectorAll("[data-mask-tag]")].filter((c) => !c.checked).map((c) => c.dataset.maskTag),
+    extra: $("#fp-extra").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    remember: $("#fp-remember").checked,
+  });
+  let timer;
+  const refresh = () => {
+    clearTimeout(timer);
+    $("#fp-send").disabled = true; // until the new check is back
+    timer = setTimeout(async () => {
+      try { p = { ...p, ...(await api.post(`/api/finance/documents/${id}/mask`, edits())) }; render(); }
+      catch (e) { toast(e.message, true); }
+    }, 350);
+  };
+  const render = () => {
+    $("#fp-items").innerHTML = p.items.length ? `<div class="fin-mask-items">${p.items.map((i) => `
+      <label class="fin-mask-item${i.on ? "" : " off"}"><input type="checkbox" data-mask-tag="${fe(i.tag)}"${i.on ? " checked" : ""} />
+        <code>${fe(i.tag)}</code><span class="t">${fe(i.text)}</span>
+        <small class="muted">${fe(FIN_MASK_KINDS[i.kind] || i.kind)} · ${fe(FIN_MASK_SOURCES[i.source] || i.source)}${i.count ? ` · ×${i.count}` : " · pas trouvé"}</small></label>`).join("")}</div>
+      <p class="muted">Décochez ce qui peut partir tel quel.</p>`
+      : `<p class="muted">Rien n'a été trouvé à masquer. Ajoutez ci-dessous ce qui doit l'être.</p>`;
+    const c = p.check;
+    $("#fp-check").className = c.ok ? "fin-mask-ok" : "fin-stale";
+    $("#fp-check").innerHTML = c.ok
+      ? "✅ Contrôle final : rien de ce qui est coché, et aucun IBAN, n° AVS, e-mail, téléphone ou adresse repéré, ne reste dans le texte."
+      : `❌ Encore visible : ${c.leftovers.map((x) => `<b>${fe(x.text)}</b> (${fe(x.why)})`).join(", ")}. Masquez-le, ou décochez-le pour l'envoyer tel quel.`;
+    $("#fp-text").innerHTML = fe(p.masked).replace(/\[([A-Z]+_\d+)\]/g, '<mark class="fin-mask">[$1]</mark>');
+    $("#fp-send").disabled = !c.ok;
+    dlg.querySelectorAll("[data-mask-tag]").forEach((x) => x.onchange = refresh);
+  };
+  $("#fp-extra").oninput = refresh;
+  $("#fp-send").onclick = async () => {
+    $("#fp-send").disabled = true;
+    try {
+      await api.post(`/api/finance/documents/${id}/send`, edits());
+      toast("Envoyé masqué — lecture en cours ☁️");
+      dlg.close();
+      finRenderTab();
+    } catch (e) { toast(e.message, true); $("#fp-send").disabled = false; }
+  };
+  render();
 }
 
 async function finDebug(id) {
@@ -1978,11 +2071,17 @@ async function finSettings(body) {
         <div class="modal-actions"><button class="btn btn-primary btn-sm" id="fs-save-cc">Enregistrer</button></div>
       </div>
       <div class="card"><h3 class="fin-h3">🤖 Lecture des documents</h3>
-        <label>Mode<select id="fs-llm-mode">${[["local_first", "Local d'abord, cloud en secours"], ["local_only", "Local seulement (rien ne sort)"], ["cloud_only", "Cloud (OpenRouter)"]].map(([k, l]) => `<option value="${k}"${s.llm.mode === k ? " selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label>Mode<select id="fs-llm-mode">${[["local_first", "Local d'abord, cloud en secours"], ["local_only", "Local seulement (rien ne sort)"], ["private_cloud", "Local masque, le cloud lit (texte anonymisé)"], ["cloud_only", "Cloud (OpenRouter)"]].map(([k, l]) => `<option value="${k}"${s.llm.mode === k ? " selected" : ""}>${l}</option>`).join("")}</select></label>
         <label>Serveur local (compatible OpenAI)<input id="fs-llm-url" value="${fe(s.llm.local_base_url)}" placeholder="${fe(ai?.local.base_url || "http://localhost:11434/v1")}" /></label>
         <label>Modèle<input id="fs-llm-model" list="fs-llm-models" value="${fe(s.llm.local_model)}" placeholder="${fe(ai?.local.model || "qwen2.5vl:7b")}" /></label>
         <datalist id="fs-llm-models">${(ai?.local.models || []).map((m) => `<option value="${fe(m)}"></option>`).join("")}</datalist>
-        <label class="wz-check"><input type="checkbox" id="fs-llm-cloud"${s.llm.allow_cloud ? " checked" : ""} /> Autoriser le cloud si le local ne répond pas</label>
+        <label class="wz-check${s.llm.mode === "local_first" ? "" : " hidden"}" id="fs-llm-cloud-row"><input type="checkbox" id="fs-llm-cloud"${s.llm.allow_cloud ? " checked" : ""} /> Autoriser le cloud si le local ne répond pas</label>
+        <label>Modèle cloud (OpenRouter)<input id="fs-llm-cloud-model" value="${fe(s.llm.cloud_model || "")}" placeholder="${fe(ai?.cloud.model || "google/gemini-2.5-flash")}" /></label>
+        <div id="fs-private" class="fin-private${s.llm.mode === "private_cloud" ? "" : " hidden"}">
+          <p class="muted">🔒 PDF : leur texte. Scans et photos : lus ici par OCR${ai?.ocr ? (ai.ocr.available ? ` (${fe(ai.ocr.langs.join(", "))})` : ` — <span class="fin-stale">Tesseract absent</span>`) : ""}. Le modèle local liste les noms, adresses et numéros ; le code les remplace par des marqueurs ; seul ce texte masqué part. Les catégories et les colonnes CSV restent en local.</p>
+          <label class="wz-check"><input type="checkbox" id="fs-priv-confirm"${s.privacy?.confirm !== false ? " checked" : ""} /> Me montrer le texte masqué avant chaque envoi</label>
+          <label>Toujours masquer (un par ligne)<textarea id="fs-priv-list" rows="3" placeholder="nom de famille, rue, n° AVS…">${fe((s.privacy?.always_mask || []).join("\n"))}</textarea></label>
+        </div>
         <p class="muted">${ai ? (ai.local.reachable ? `🟢 ${fe(ai.local.base_url)} répond · modèles : ${fe(ai.local.models.join(", ") || "—")}` : `🟠 ${fe(ai.local.base_url)} ne répond pas. Avec Ollama : <code>ollama pull qwen2.5vl:7b</code>, et pour Docker, lancer Ollama avec <code>OLLAMA_HOST=0.0.0.0</code>.`) : ""} ${ai?.cloud.configured ? "· ☁️ OpenRouter configuré" : "· ☁️ pas de clé OpenRouter"}</p>
         <div class="modal-actions"><button class="btn btn-primary btn-sm" id="fs-save-llm">Enregistrer</button></div>
       </div>
@@ -2015,8 +2114,15 @@ async function finSettings(body) {
     const cc2 = {}; body.querySelectorAll("[data-cc]").forEach((i) => { cc2[i.dataset.cc] = finParse(i.value) ?? 0; });
     await api.put("/api/finance/settings", { child_costs: cc2 }); toast("Enregistré");
   };
+  $("#fs-llm-mode").onchange = (e) => {
+    $("#fs-private").classList.toggle("hidden", e.target.value !== "private_cloud");
+    $("#fs-llm-cloud-row").classList.toggle("hidden", e.target.value !== "local_first");
+  };
   $("#fs-save-llm").onclick = async () => {
-    await api.put("/api/finance/settings", { llm: { mode: $("#fs-llm-mode").value, local_base_url: $("#fs-llm-url").value.trim(), local_model: $("#fs-llm-model").value.trim(), allow_cloud: $("#fs-llm-cloud").checked } });
+    await api.put("/api/finance/settings", {
+      llm: { mode: $("#fs-llm-mode").value, local_base_url: $("#fs-llm-url").value.trim(), local_model: $("#fs-llm-model").value.trim(), allow_cloud: $("#fs-llm-cloud").checked, cloud_model: $("#fs-llm-cloud-model").value.trim() },
+      privacy: { confirm: $("#fs-priv-confirm").checked, always_mask: $("#fs-priv-list").value.split("\n").map((x) => x.trim()).filter(Boolean) },
+    });
     toast("Enregistré"); finRenderTab();
   };
   $("#fs-save-online").onclick = async () => {

@@ -71,8 +71,10 @@ def status():
 
 @router.get("/llm/status")
 def llm_status():
-    """Is the local model server up (Ollama…), is the cloud fallback configured?"""
-    return llm.status(db.get_settings())
+    """Is the local model server up (Ollama…), is the cloud configured, is the OCR (Tesseract) there?"""
+    from ..finance.importers import ocr
+
+    return {**llm.status(db.get_settings()), "ocr": ocr.status()}
 
 
 @router.get("/settings")
@@ -909,6 +911,33 @@ def reparse_document(doc_id: int, body: Optional[ReparseIn] = None):
             raise HTTPException(422, str(e))
     documents.parse_async(doc_id)
     return {"status": "parsing"}
+
+
+class MaskEdits(BaseModel):
+    off: list[str] = []      # tags (« [PERSONNE_2] ») the household lets go out as written
+    extra: list[str] = []    # more text to hide
+    remember: bool = False   # on send: add `extra` to settings.privacy.always_mask
+
+
+@router.post("/documents/{doc_id}/mask")
+def mask_document(doc_id: int, body: Optional[MaskEdits] = None):
+    """Mode private_cloud: the masked text with these changes, and the final check. Nothing saved or sent."""
+    get_document(doc_id)
+    try:
+        return documents.mask_preview(doc_id, body.model_dump() if body else {})
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/documents/{doc_id}/send")
+def send_document(doc_id: int, body: Optional[MaskEdits] = None):
+    """Mode private_cloud: send the checked, masked text to the cloud model (read in the background,
+    then status `review`). 409 when the final check still finds a private detail: nothing leaves."""
+    get_document(doc_id)
+    try:
+        return documents.send(doc_id, body.model_dump() if body else {})
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @router.post("/documents/{doc_id}/apply")

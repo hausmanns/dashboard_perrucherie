@@ -13,8 +13,15 @@ Providers, tried in the order given by the mode:
   account the rest of the dashboard uses.
 
 Modes: `local_first` (default) · `local_only` (a document never leaves the
-house) · `cloud_only`. `allow_cloud=False` turns local_first into local_only.
-The finance settings can override URL/model/mode at runtime.
+house) · `cloud_only` · `private_cloud` (the local model only *masks* the
+text, the cloud reads the masked text — see `finance/anonymize.py`; every
+other call, e.g. categories or CSV columns, then stays local). `allow_cloud=False`
+turns local_first into local_only. The finance settings can override
+URL/model/mode and the cloud model at runtime. Cloud calls ask OpenRouter for
+providers that don't keep or train on the data (`data_collection: deny`).
+
+`providers=["local"]` / `["cloud"]` forces one provider for one call (the
+masking step and the masked read of `private_cloud`).
 
 `chat_json()` returns `(data, engine)` where engine says who answered, e.g.
 `local:qwen2.5vl:7b` — the review screen shows it. Pass `trace={}` to keep,
@@ -63,7 +70,8 @@ def resolve(settings: dict | None = None) -> dict:
         "mode": mode,
         "local": {**loc, "base_url": (s.get("local_base_url") or loc["base_url"]).rstrip("/"),
                   "model": s.get("local_model") or loc["model"]},
-        "cloud": {"configured": bool(config.OPENROUTER_API_KEY), "model": config.OPENROUTER_MODEL},
+        "cloud": {"configured": bool(config.OPENROUTER_API_KEY),
+                  "model": s.get("cloud_model") or config.OPENROUTER_MODEL},
     }
 
 
@@ -135,25 +143,31 @@ def _local(messages: list[dict], cfg: dict, call: dict | None = None) -> dict:
     return _answer(r.json(), {} if call is None else call)
 
 
-def _cloud(messages: list[dict], call: dict | None = None) -> dict:
+def _cloud(messages: list[dict], model: str, call: dict | None = None) -> dict:
     if not config.OPENROUTER_API_KEY:
         raise LLMError("OPENROUTER_API_KEY non configurée")
-    r = httpx.post(config.OPENROUTER_URL, json={"model": config.OPENROUTER_MODEL, "messages": messages},
-                   headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"}, timeout=120)
+    payload = {"model": model, "messages": messages, "temperature": 0,
+               "provider": {"data_collection": "deny"}}  # only providers that don't store or train on it
+    r = httpx.post(config.OPENROUTER_URL, json=payload,
+                   headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"}, timeout=180)
     if r.status_code != 200:
         raise LLMError(f"OpenRouter {r.status_code} : {r.text[:200]}")
     return _answer(r.json(), {} if call is None else call)
 
 
-def chat_json(messages: list[dict], settings: dict | None = None,
-              trace: dict | None = None) -> tuple[dict, str]:
+ORDER = {"local_first": ["local", "cloud"], "local_only": ["local"], "cloud_only": ["cloud"],
+         "private_cloud": ["local"]}  # private_cloud: only masked text goes out, through `providers=["cloud"]`
+
+
+def chat_json(messages: list[dict], settings: dict | None = None, trace: dict | None = None,
+              providers: list[str] | None = None) -> tuple[dict, str]:
     """Ask for a strict-JSON answer. Returns (data, engine). Raises LLMError when nobody answered.
 
     `trace`, when given, is filled even on failure: {prompt, images, attempts: [{engine, seconds,
-    reasoning, raw, usage, error?}]} — one attempt per provider tried."""
+    reasoning, raw, usage, error?}]} — one attempt per provider tried. `providers` overrides the
+    mode's order for this call."""
     cfg = resolve(settings)
-    order = {"local_first": ["local", "cloud"], "local_only": ["local"], "cloud_only": ["cloud"]}.get(
-        cfg["mode"], ["local", "cloud"])
+    order = providers or ORDER.get(cfg["mode"], ["local", "cloud"])
     if trace is not None:
         trace.update(_describe(messages), attempts=[])
     errors = []
@@ -165,7 +179,8 @@ def chat_json(messages: list[dict], settings: dict | None = None,
         call: dict = {"engine": engine}
         t0 = time.monotonic()
         try:
-            data = _local(messages, cfg["local"], call) if prov == "local" else _cloud(messages, call)
+            data = (_local(messages, cfg["local"], call) if prov == "local"
+                    else _cloud(messages, cfg["cloud"]["model"], call))
             return data, engine
         except (httpx.HTTPError, LLMError, KeyError, ValueError) as e:
             errors.append(f"{prov}: {e}")
@@ -195,4 +210,6 @@ def status(settings: dict | None = None) -> dict:
                   "model_installed": loc["model"] in models if models else None, "models": models, "error": error},
         "cloud": cfg["cloud"],
         "can_parse": reachable or (cfg["mode"] != "local_only" and cfg["cloud"]["configured"]),
+        # private_cloud without the local model: only the rules and the household's list mask the text
+        "can_mask_with_model": reachable,
     }

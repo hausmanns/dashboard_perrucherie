@@ -17,6 +17,9 @@ None of the points below blocks testing.
 4. **Local LLM default** — `LOCAL_LLM_MODEL` defaults to `qwen2.5vl:7b`; either pull it or set
    the model in Réglages → Lecture des documents. Test a real payslip, LPP certificate,
    tax bill and a PDF bank statement end to end, and tune `documents.EXTRACT_PROMPT` if needed.
+   Mode « Local masque, le cloud lit » (`private_cloud`): rebuild the image (`docker compose up -d
+   --build`) for Tesseract; try it on a real scan — OCR can misread accented capitals and digits.
+   Nemotron 3.5 Bolt found names/employer/addresses on a fake slip (~20 s); qwen2.5:3b found nothing.
 5. **Bank CSV formats** — UBS / Raiffeisen / ZKB / Yuh / Swissquote profiles were written
    without real files: drop a real export of each, fix `importers/tables.py`, add the file
    (anonymised) as a test fixture.

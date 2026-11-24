@@ -33,6 +33,8 @@ services:
       # Finances: documents (payslips, statements, tax bills) are read by a
       # LOCAL model first — any OpenAI-compatible server (Ollama, LM Studio…).
       # Default: Ollama on this machine, reached through host.docker.internal.
+      # LLM_MODE=private_cloud: the local model only masks names, addresses,
+      # numbers…; OpenRouter then reads the masked text (scans via Tesseract OCR).
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-}
       - LOCAL_LLM_MODEL=${LOCAL_LLM_MODEL:-}
       - LOCAL_LLM_API_KEY=${LOCAL_LLM_API_KEY:-}

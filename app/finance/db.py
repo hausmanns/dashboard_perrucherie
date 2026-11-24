@@ -201,10 +201,11 @@ CREATE TABLE IF NOT EXISTS documents (
     sha256      TEXT NOT NULL UNIQUE,
     doc_type    TEXT NOT NULL DEFAULT '',
     hint_type   TEXT NOT NULL DEFAULT '',         -- type chosen by the household ('' = the model guesses)
-    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | parsing | review | applied | error | ignored
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | parsing | masked | review | applied | error | ignored
     engine      TEXT NOT NULL DEFAULT '',         -- camt | csv:<profile> | llm:<provider/model>
     extracted   TEXT,                             -- json result shown in the review screen
     debug       TEXT,                             -- json: what the LLM was sent, its thinking, raw answer
+    privacy     TEXT,                             -- json (private_cloud): text, masked items, masked text, check
     error       TEXT NOT NULL DEFAULT '',
     member_id   INTEGER,
     account_id  INTEGER,
@@ -337,10 +338,15 @@ DEFAULT_SETTINGS: dict = {
         "independent_at": 25,
     },
     "llm": {
-        "mode": "local_first",             # local_first | local_only | cloud_only
+        "mode": "local_first",             # local_first | local_only | cloud_only | private_cloud
         "local_base_url": "",              # "" = LOCAL_LLM_BASE_URL env or Ollama default
         "local_model": "",                 # "" = LOCAL_LLM_MODEL env or default vision model
-        "allow_cloud": True,               # fallback to OpenRouter when local fails
+        "allow_cloud": True,               # fallback to OpenRouter when local fails (local_first)
+        "cloud_model": "",                 # "" = OPENROUTER_MODEL env
+    },
+    "privacy": {                           # private_cloud mode (finance/anonymize.py)
+        "confirm": True,                   # show the masked text and wait for « Envoyer »
+        "always_mask": [],                 # the household's own words to hide (surname, street, AVS n°…)
     },
     "online": {"prices": True, "fx": True, "cpi": True},
 }
@@ -362,7 +368,7 @@ def docs_dir() -> Path:
 # Columns added after a table was first created: CREATE TABLE IF NOT EXISTS skips old tables.
 ADDED_COLUMNS = {
     "transactions": {"spread_months": "INTEGER NOT NULL DEFAULT 1"},
-    "documents": {"debug": "TEXT", "hint_type": "TEXT NOT NULL DEFAULT ''"},
+    "documents": {"debug": "TEXT", "hint_type": "TEXT NOT NULL DEFAULT ''", "privacy": "TEXT"},
     "holdings": {"valor": "TEXT NOT NULL DEFAULT ''"},
 }
 

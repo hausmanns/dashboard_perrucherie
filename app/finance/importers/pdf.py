@@ -36,7 +36,8 @@ def parse(data: bytes) -> dict:
             "images": images, "scanned": scanned, "page_count": len(pages)}
 
 
-def render_pages(data: bytes, max_pages: int = MAX_PAGES) -> list[tuple[bytes, str]]:
+def render_pages(data: bytes, max_pages: int = MAX_PAGES, scale: float = 2.0) -> list[tuple[bytes, str]]:
+    """Page images. `scale` 2 ≈ 144 dpi (enough for a vision model); OCR wants ~3 (216 dpi)."""
     import pypdfium2 as pdfium
 
     doc = pdfium.PdfDocument(data)
@@ -45,7 +46,7 @@ def render_pages(data: bytes, max_pages: int = MAX_PAGES) -> list[tuple[bytes, s
         for i, page in enumerate(doc):
             if i >= max_pages:
                 break
-            img = page.render(scale=2.0).to_pil()
+            img = page.render(scale=scale).to_pil()
             buf = io.BytesIO()
             img.convert("RGB").save(buf, format="JPEG", quality=85)
             out.append((buf.getvalue(), "image/jpeg"))

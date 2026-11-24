@@ -12,6 +12,15 @@
    (calibration), a health-insurance premium…
 
 The LLM never writes anything: it only fills `extracted`.
+
+Mode `private_cloud` (one option among the reading modes): a PDF or photo is
+turned into text here (PDF text layer, or Tesseract OCR for a scan/photo), the
+private details are masked (`anonymize.py`: rules, what the household knows,
+the local model's list), the result goes to `privacy`, status `masked`. The
+household checks the masked text and calls `send()` (or, with
+`privacy.confirm` off, it goes by itself when every check passed). Only that
+masked text goes to the cloud; the tags in its answer are put back here, then
+status `review` as usual.
 """
 from __future__ import annotations
 
@@ -24,9 +33,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from .. import llm
-from . import db, gamify, ledger
+from . import anonymize, db, gamify, ledger
 from .categorize import normalize
-from .importers import parse_file, tables
+from .importers import ocr, parse_file, tables
 from .money import AmountError, parse_amount, parse_date, to_cents
 
 log = logging.getLogger(__name__)
@@ -110,6 +119,13 @@ Champs : {PROMPT_FIELDS[doc_type]}
 
 {PROMPT_ANSWER % doc_type}"""
 
+PRIVATE_NOTE = """Les données personnelles ont été remplacées par des marqueurs entre crochets ([PERSONNE_1],
+[IBAN_1], [ADRESSE_1]…). Quand la valeur d'un champ est masquée, recopie le marqueur tel quel
+(ex. "person_name": "[PERSONNE_1]")."""
+OCR_NOTE = """Le texte vient d'une lecture OCR d'un scan ou d'une photo : il peut contenir des fautes de lecture
+et des colonnes décalées. Un montant illisible vaut null."""
+PRIVATE_MAX_CHARS = 30_000
+
 MAPPING_PROMPT = """Voici le début d'un export bancaire (tableau). Indique quelle colonne contient quoi.
 Lignes (index: cellules séparées par |) :
 {rows}
@@ -160,8 +176,9 @@ def store(filename: str, data: bytes, mime: str = "", member_id: int | None = No
 def _doc(row: dict) -> dict:
     row = dict(row)
     row["extracted"] = db.loads(row.get("extracted"), None)
-    if "debug" in row:
-        row["debug"] = db.loads(row["debug"], None)
+    for k in ("debug", "privacy"):
+        if k in row:
+            row[k] = db.loads(row[k], None)
     row["doc_type_label"] = DOC_TYPES.get(row.get("doc_type") or "", "")
     row["hint_type"] = row.get("hint_type") or ""
     return row
@@ -181,6 +198,7 @@ def list_docs(limit: int = 100) -> list[dict]:
     out = []
     for r in rows:
         r["has_debug"] = bool(r.pop("debug", None))  # the trace itself only comes with GET /documents/{id}
+        r["has_privacy"] = bool(r.pop("privacy", None))
         d = _doc(r)
         ex = d.get("extracted") or {}
         if ex.get("transactions") and len(ex["transactions"]) > 5:
@@ -200,7 +218,7 @@ def delete(doc_id: int) -> None:
 
 
 def _set(doc_id: int, **fields) -> None:
-    for k in ("extracted", "debug"):
+    for k in ("extracted", "debug", "privacy"):
         if k in fields and not isinstance(fields[k], (str, type(None))):
             fields[k] = json.dumps(fields[k], default=_json_default)
     sets = ", ".join(f"{k} = ?" for k in fields)
@@ -221,17 +239,25 @@ def _json_default(o):
 # --------------------------------------------------------------------------- parse
 
 
+def _background(fn, doc_id: int) -> None:
+    threading.Thread(target=fn, args=(doc_id,), daemon=True, name=f"finance-doc-{doc_id}").start()
+
+
 def parse_async(doc_id: int) -> None:
-    threading.Thread(target=parse, args=(doc_id,), daemon=True, name=f"finance-doc-{doc_id}").start()
+    _background(parse, doc_id)
 
 
 def parse(doc_id: int) -> dict:
     d = get(doc_id)
-    _set(doc_id, status="parsing", error="", debug=None)
+    _set(doc_id, status="parsing", error="", debug=None, privacy=None)
     trace: dict = {}  # filled by the LLM call, kept even when it fails
     try:
         data = (db.docs_dir() / d["stored_name"]).read_bytes()
-        result = _parse(d, data, trace)
+        settings = db.get_settings()
+        parsed = parse_file(d["filename"], data)
+        if parsed["kind"] in ("pdf", "image") and llm.resolve(settings)["mode"] == "private_cloud":
+            return _mask_document(doc_id, parsed, data, settings)
+        result = _parse(d, data, trace, parsed, settings)
         _set(doc_id, status="review", extracted=result, engine=result.get("engine", ""),
              doc_type=result.get("doc_type", ""), parsed_at=datetime.now().isoformat(timespec="seconds"),
              debug=trace or None)
@@ -266,9 +292,10 @@ def _tx_out(t: dict) -> dict:
     return {**t, "amount": float(t["amount"]), "balance": float(t["balance"]) if t.get("balance") is not None else None}
 
 
-def _parse(d: dict, data: bytes, trace: dict | None = None) -> dict:
-    parsed = parse_file(d["filename"], data)
-    settings = db.get_settings()
+def _parse(d: dict, data: bytes, trace: dict | None = None, parsed: dict | None = None,
+           settings: dict | None = None) -> dict:
+    parsed = parsed or parse_file(d["filename"], data)
+    settings = settings or db.get_settings()
     kind = parsed["kind"]
     if kind == "table":
         rows = [parsed.get("columns", [])] + parsed.get("rows", [])
@@ -309,6 +336,104 @@ def _parse(d: dict, data: bytes, trace: dict | None = None) -> dict:
         answer, engine = llm.chat_json(messages, settings, trace=trace)
         return _from_llm(answer, f"{parsed['engine']} → {engine}", forced_type=hint)
     raise ValueError("format non reconnu — essayez l'export CAMT.053 (XML), CSV ou PDF")
+
+
+# --------------------------------------------------------------------------- private_cloud: mask, check, send
+
+
+def _document_text(parsed: dict, data: bytes) -> tuple[str, str]:
+    """(text, source): the PDF's own text, or OCR here for a scan or a photo — never an image to the cloud."""
+    if parsed["kind"] == "pdf" and not parsed.get("scanned"):
+        return parsed["text"], "pdf-text"
+    if parsed["kind"] == "pdf":
+        from .importers.pdf import render_pages
+        images = render_pages(data, scale=3.0)
+    else:
+        images = parsed.get("images") or []
+    try:
+        text = ocr.read_images(images)
+    except ocr.OCRError as e:
+        raise ValueError(str(e))
+    return text, "ocr:tesseract"
+
+
+def _mask_document(doc_id: int, parsed: dict, data: bytes, settings: dict) -> dict:
+    text, source = _document_text(parsed, data)
+    if len(text.strip()) < 20:
+        raise ValueError("aucun texte lisible dans ce document (photo floue ?)")
+    priv = anonymize.prepare(text[:PRIVATE_MAX_CHARS], settings, source)
+    who = priv["local"]["engine"] or "règles seules"
+    _set(doc_id, status="masked", privacy=priv, engine=f"{source} → masqué ({who})", error="",
+         parsed_at=datetime.now().isoformat(timespec="seconds"))
+    unattended = not (settings.get("privacy") or {}).get("confirm", True)
+    if unattended and priv["check"]["ok"] and priv["local"]["engine"] and not priv["local"]["errors"]:
+        _set(doc_id, status="parsing")
+        _send_now(doc_id)  # already in the background thread
+    return get(doc_id)
+
+
+def _privacy_of(doc_id: int) -> tuple[dict, dict]:
+    d = get(doc_id)
+    if not d.get("privacy"):
+        raise ValueError("rien à envoyer : ce document n'a pas été masqué (mode « Local masque, le cloud lit »)")
+    return d, d["privacy"]
+
+
+def mask_preview(doc_id: int, edits: dict | None = None) -> dict:
+    """What `send()` would send with these changes (`off`: tags left visible, `extra`: more text to hide).
+    Nothing is saved, nothing is sent."""
+    _d, priv = _privacy_of(doc_id)
+    out = anonymize.rebuild(priv, edits, db.get_settings())
+    return {k: v for k, v in out.items() if k != "text"}
+
+
+def send(doc_id: int, edits: dict | None = None) -> dict:
+    """The household checked the masked text: send it to the cloud model (in the background).
+    Raises ValueError when the final check still finds a private detail — then nothing leaves."""
+    edits = edits or {}
+    d, priv = _privacy_of(doc_id)
+    if d["status"] != "masked":
+        raise ValueError("ce document n'attend pas d'envoi")
+    if edits.get("remember") and edits.get("extra"):
+        settings = db.get_settings()
+        have = list((settings.get("privacy") or {}).get("always_mask") or [])
+        known = {anonymize._key(t) for t in have}
+        have += [t.strip() for t in edits["extra"] if t.strip() and anonymize._key(t) not in known]
+        db.save_settings({"privacy": {"always_mask": have}})
+    priv = anonymize.rebuild(priv, edits, db.get_settings())
+    _set(doc_id, privacy=priv)
+    if not priv["check"]["ok"]:
+        left = ", ".join(f"« {x['text']} »" for x in priv["check"]["leftovers"][:5])
+        raise ValueError(f"contrôle final : encore visible {left} — masquez-le ou décochez-le, rien n'est parti")
+    _set(doc_id, status="parsing", error="")
+    _background(_send_now, doc_id)
+    return get(doc_id)
+
+
+def _send_now(doc_id: int) -> None:
+    d = get(doc_id)
+    priv = d["privacy"]
+    trace: dict = {}
+    try:
+        check = anonymize.verify(priv["masked"], priv["items"])  # the exact text about to leave, once more
+        if not check["ok"]:
+            raise ValueError("contrôle final : " + ", ".join(x["text"] for x in check["leftovers"][:5]))
+        hint = d.get("hint_type") or ""
+        note = PRIVATE_NOTE + ("\n" + OCR_NOTE if priv["source"].startswith("ocr") else "")
+        messages = llm.text_message(f"{extract_prompt(hint)}\n\n{note}\n\nTexte du document :\n{priv['masked']}")
+        answer, engine = llm.chat_json(messages, db.get_settings(), trace=trace, providers=["cloud"])
+        answer = anonymize.restore(answer, priv["items"])
+        who = priv["local"]["engine"] or "règles seules"
+        result = _from_llm(answer, f"{priv['source']} → masqué ({who}) → {engine}", forced_type=hint)
+        result["privacy"] = {"source": priv["source"], "masked": sum(1 for it in priv["items"] if it.get("on"))}
+        trace["mask"] = {k: priv["local"].get(k) for k in ("engine", "chunks", "ok", "errors", "seconds", "refused",
+                                                           "attempts")}
+        sent_at = datetime.now().isoformat(timespec="seconds")
+        _set(doc_id, status="review", extracted=result, engine=result["engine"], doc_type=result["doc_type"],
+             parsed_at=sent_at, debug=trace, privacy={**priv, "sent_at": sent_at})
+    except Exception as e:  # noqa: BLE001 — shown on the « before sending » screen, which can send again
+        log.exception("document %s (envoi masqué)", doc_id)
+        _set(doc_id, status="masked", error=f"envoi : {e}"[:500], debug=trace or None)
 
 
 def _num(v):
