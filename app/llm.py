@@ -17,7 +17,9 @@ house) · `cloud_only`. `allow_cloud=False` turns local_first into local_only.
 The finance settings can override URL/model/mode at runtime.
 
 `chat_json()` returns `(data, engine)` where engine says who answered, e.g.
-`local:qwen2.5vl:7b` — the review screen shows it.
+`local:qwen2.5vl:7b` — the review screen shows it. Pass `trace={}` to keep,
+for debugging, what was sent and, per provider tried, the model's thinking
+(when it gives one), its raw answer, tokens, time and error.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import base64
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -90,42 +93,87 @@ def decode_json(content: str) -> dict:
     raise LLMError(f"réponse illisible : {content[:200]}")
 
 
-def _local(messages: list[dict], cfg: dict) -> dict:
+TRACE_MAX = 60_000  # characters kept per text in a debug trace
+
+
+def _describe(messages: list[dict]) -> dict:
+    """What was sent, for the trace: the text parts and how many images (not the images)."""
+    texts, images = [], 0
+    for m in messages:
+        content = m.get("content")
+        parts = [{"type": "text", "text": content}] if isinstance(content, str) else (content or [])
+        for p in parts:
+            if p.get("type") == "text":
+                texts.append(p.get("text") or "")
+            elif p.get("type") == "image_url":
+                images += 1
+    return {"prompt": "\n\n".join(texts)[:TRACE_MAX], "images": images}
+
+
+def _answer(body: dict, call: dict) -> dict:
+    """Decode the JSON answer; note the thinking, raw text and tokens in `call`."""
+    msg = body["choices"][0]["message"]
+    content = msg.get("content") or ""
+    inline = re.match(r"\s*<think>(.*?)</think>\s*(.*)", content, re.S)  # thinking left in the text
+    if inline:
+        content = inline.group(2)
+    # Ollama, OpenRouter: `reasoning` · vLLM, llama.cpp, LM Studio: `reasoning_content`
+    reasoning = msg.get("reasoning") or msg.get("reasoning_content") or (inline.group(1).strip() if inline else "")
+    if not isinstance(reasoning, str):
+        reasoning = json.dumps(reasoning, ensure_ascii=False)
+    call.update(reasoning=reasoning[:TRACE_MAX], raw=content[:TRACE_MAX], usage=body.get("usage") or {})
+    return decode_json(content)
+
+
+def _local(messages: list[dict], cfg: dict, call: dict | None = None) -> dict:
     headers = {"Authorization": f"Bearer {cfg['api_key']}"} if cfg.get("api_key") else {}
     payload = {"model": cfg["model"], "messages": messages, "temperature": 0,
                "response_format": {"type": "json_object"}}
     r = httpx.post(f"{cfg['base_url']}/chat/completions", json=payload, headers=headers, timeout=cfg["timeout"])
     if r.status_code != 200:
         raise LLMError(f"serveur local {r.status_code} : {r.text[:200]}")
-    return decode_json(r.json()["choices"][0]["message"]["content"])
+    return _answer(r.json(), {} if call is None else call)
 
 
-def _cloud(messages: list[dict]) -> dict:
+def _cloud(messages: list[dict], call: dict | None = None) -> dict:
     if not config.OPENROUTER_API_KEY:
         raise LLMError("OPENROUTER_API_KEY non configurée")
     r = httpx.post(config.OPENROUTER_URL, json={"model": config.OPENROUTER_MODEL, "messages": messages},
                    headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"}, timeout=120)
     if r.status_code != 200:
         raise LLMError(f"OpenRouter {r.status_code} : {r.text[:200]}")
-    return decode_json(r.json()["choices"][0]["message"]["content"])
+    return _answer(r.json(), {} if call is None else call)
 
 
-def chat_json(messages: list[dict], settings: dict | None = None) -> tuple[dict, str]:
-    """Ask for a strict-JSON answer. Returns (data, engine). Raises LLMError when nobody answered."""
+def chat_json(messages: list[dict], settings: dict | None = None,
+              trace: dict | None = None) -> tuple[dict, str]:
+    """Ask for a strict-JSON answer. Returns (data, engine). Raises LLMError when nobody answered.
+
+    `trace`, when given, is filled even on failure: {prompt, images, attempts: [{engine, seconds,
+    reasoning, raw, usage, error?}]} — one attempt per provider tried."""
     cfg = resolve(settings)
     order = {"local_first": ["local", "cloud"], "local_only": ["local"], "cloud_only": ["cloud"]}.get(
         cfg["mode"], ["local", "cloud"])
+    if trace is not None:
+        trace.update(_describe(messages), attempts=[])
     errors = []
     for prov in order:
+        if prov == "cloud" and not cfg["cloud"]["configured"]:
+            errors.append("cloud: pas de clé OpenRouter")
+            continue
+        engine = f"local:{cfg['local']['model']}" if prov == "local" else f"cloud:{cfg['cloud']['model']}"
+        call: dict = {"engine": engine}
+        t0 = time.monotonic()
         try:
-            if prov == "local":
-                return _local(messages, cfg["local"]), f"local:{cfg['local']['model']}"
-            if not cfg["cloud"]["configured"]:
-                errors.append("cloud: pas de clé OpenRouter")
-                continue
-            return _cloud(messages), f"cloud:{cfg['cloud']['model']}"
+            data = _local(messages, cfg["local"], call) if prov == "local" else _cloud(messages, call)
+            return data, engine
         except (httpx.HTTPError, LLMError, KeyError, ValueError) as e:
             errors.append(f"{prov}: {e}")
+            call["error"] = str(e)[:500]
+        finally:
+            call["seconds"] = round(time.monotonic() - t0, 1)
+            if trace is not None:
+                trace["attempts"].append(call)
     raise LLMError(" · ".join(errors) or "aucun modèle disponible")
 
 

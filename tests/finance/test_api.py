@@ -285,17 +285,45 @@ def test_photo_payslip_through_fake_llm(client, monkeypatch):
               "fields": {"person_name": "Lea Dupont", "employer": "Hôpital", "period": "2026-11",
                          "gross_monthly": 7000, "net_monthly": 5900, "work_pct": 80, "salaries_per_year": 13,
                          "lpp_employee": 420, "aanp": 70}}
-    monkeypatch.setattr(llm, "chat_json", lambda messages, settings=None: (answer, "local:test-model"))
+    def fake_chat(messages, settings=None, trace=None):
+        trace.update(prompt="Tu lis…", images=1, attempts=[{"engine": "local:test-model", "seconds": 1.2,
+                                                            "reasoning": "Le brut est 7000.", "raw": "{}"}])
+        return answer, "local:test-model"
+
+    monkeypatch.setattr(llm, "chat_json", fake_chat)
     png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
     d = client.post("/api/finance/documents", files=[("files", ("fiche.png", png, "image/png"))]).json()[0]
     d = client.get(f"/api/finance/documents/{d['id']}").json()
     assert d["status"] == "review" and d["doc_type"] == "payslip"
     assert d["extracted"]["member_id"] == res["members"]["l"]          # « Lea Dupont » → Lea
     assert "local:test-model" in d["engine"]
+    assert d["debug"]["attempts"][0]["reasoning"] == "Le brut est 7000."  # 🔍 « Sous le capot »
+    listed = client.get("/api/finance/documents").json()[0]
+    assert listed["has_debug"] is True and "debug" not in listed       # the list stays light
     client.post(f"/api/finance/documents/{d['id']}/apply", json={})
     inc = client.get(f"/api/finance/incomes?member_id={res['members']['l']}").json()
     assert inc[0]["gross_annual"] == pytest.approx(7000 * 13)
     assert inc[0]["lpp_employee_annual"] == pytest.approx(420 * 12)
+
+
+def test_payslip_deductions_copied_with_their_minus_sign(client, monkeypatch):
+    """Nemotron 3.5 Bolt writes « lpp_employee: -412.6 » as printed on the slip: still a positive contribution."""
+    from app import llm
+    from app.finance import db
+
+    res = onboard(client)
+    answer = {"doc_type": "payslip", "fields": {"person_name": "Lea Dupont", "gross_monthly": 7000,
+                                                "net_monthly": 5900, "salaries_per_year": 12,
+                                                "lpp_employee": -412.6, "aanp": "-70.00"}}
+    monkeypatch.setattr(llm, "chat_json", lambda messages, settings=None, trace=None: (answer, "local:nemotron"))
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    d = client.post("/api/finance/documents", files=[("files", ("fiche.png", png, "image/png"))]).json()[0]
+    client.post(f"/api/finance/documents/{d['id']}/apply", json={})
+    inc = client.get(f"/api/finance/incomes?member_id={res['members']['l']}").json()
+    assert inc[0]["lpp_employee_annual"] == pytest.approx(412.6 * 12)
+    with db.get_conn() as conn:
+        meta = json.loads(conn.execute("SELECT meta FROM members WHERE id = ?", (res["members"]["l"],)).fetchone()["meta"])
+    assert meta["aanp_rate"] == pytest.approx(0.01)
 
 
 def test_backup_roundtrip(client):

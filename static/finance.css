@@ -235,6 +235,16 @@
 .fin-doc-parsing, .fin-doc-pending { box-shadow: inset 4px 0 0 var(--accent), var(--shadow); }
 .fin-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 0.8rem; }
 .fin-check { font-size: 0.82rem; margin-top: 0.4rem; }
+.fin-debug-fold { margin-top: 0.6rem; }
+.fin-debug-fold > summary, .fin-debug summary { cursor: pointer; font-size: 0.86rem; color: var(--ink-soft); }
+.fin-debug { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem; font-size: 0.86rem; }
+.fin-debug-try { border-left: 3px solid var(--line-strong); padding-left: 0.7rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.fin-debug-pre {
+  margin: 0.3rem 0 0; padding: 0.6rem 0.7rem; max-height: 45vh; overflow: auto;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+  font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.74rem; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink);
+}
 .fin-sources { font-size: 0.82rem; color: var(--ink-soft); padding-left: 1.1rem; margin-bottom: 0.9rem; line-height: 1.5; }
 
 /* modals */

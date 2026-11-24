@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS documents (
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending | parsing | review | applied | error | ignored
     engine      TEXT NOT NULL DEFAULT '',         -- camt | csv:<profile> | llm:<provider/model>
     extracted   TEXT,                             -- json result shown in the review screen
+    debug       TEXT,                             -- json: what the LLM was sent, its thinking, raw answer
     error       TEXT NOT NULL DEFAULT '',
     member_id   INTEGER,
     account_id  INTEGER,
@@ -359,6 +360,7 @@ def docs_dir() -> Path:
 # Columns added after a table was first created: CREATE TABLE IF NOT EXISTS skips old tables.
 ADDED_COLUMNS = {
     "transactions": {"spread_months": "INTEGER NOT NULL DEFAULT 1"},
+    "documents": {"debug": "TEXT"},
 }
 
 

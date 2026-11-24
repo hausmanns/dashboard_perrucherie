@@ -1759,6 +1759,7 @@ async function finDocs(body) {
         <div class="plan-actions">
           ${d.status === "review" ? `<button class="btn btn-primary btn-sm" data-review="${d.id}">Vérifier</button>` : ""}
           ${["error", "review", "ignored"].includes(d.status) ? `<button class="btn btn-ghost btn-sm" data-reparse="${d.id}">Relire</button>` : ""}
+          ${d.has_debug ? `<button class="icon-btn" data-debug="${d.id}" title="Sous le capot : ce que l'IA a reçu, pensé et répondu">🔍</button>` : ""}
           <a class="icon-btn" href="/api/finance/documents/${d.id}/file" target="_blank" rel="noopener" title="Ouvrir">👁️</a>
           <button class="icon-btn" data-docdel="${d.id}" title="Supprimer">🗑️</button>
         </div>
@@ -1766,6 +1767,7 @@ async function finDocs(body) {
   $("#fin-pick").onclick = () => $("#fin-file-input").click();
   body.querySelectorAll("[data-review]").forEach((b) => b.onclick = () => finReview(+b.dataset.review));
   body.querySelectorAll("[data-reparse]").forEach((b) => b.onclick = async () => { await api.post(`/api/finance/documents/${b.dataset.reparse}/reparse`); finRenderTab(); });
+  body.querySelectorAll("[data-debug]").forEach((b) => b.onclick = () => finDebug(+b.dataset.debug));
   body.querySelectorAll("[data-docdel]").forEach((b) => b.onclick = async () => {
     if (await finConfirm("Supprimer ce document ? (Les opérations déjà importées restent.)", { ok: "Supprimer", danger: true })) {
       await api.del(`/api/finance/documents/${b.dataset.docdel}`); finRenderTab();
@@ -1831,6 +1833,7 @@ async function finReview(id) {
     ${t && t !== "bank_statement" && t !== "broker_statement" ? `<label>Type de document<select id="fr-type">${Object.entries(fin.status.doc_types).map(([k, l]) => `<option value="${k}"${t === k ? " selected" : ""}>${fe(l)}</option>`).join("")}</select></label>` : ""}
     ${main}
     <p class="muted fin-check">Vérifiez les chiffres : l'IA peut se tromper, rien n'est écrit avant « Appliquer ».</p>
+    ${d.debug ? `<details class="fin-debug-fold"><summary>🔍 Sous le capot</summary>${finDebugHtml(d.debug)}</details>` : ""}
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="fr-ignore">Ignorer</button>
       <button type="button" class="btn btn-ghost" data-close>Plus tard</button>
@@ -1862,6 +1865,35 @@ async function finReview(id) {
       finRenderTab();
     } catch (e) { toast(e.message, true); $("#fr-apply").disabled = false; }
   };
+}
+
+/* What the AI was sent, thought and answered — for debugging. `dbg` = document.debug (app/llm.py chat_json trace). */
+function finDebugHtml(dbg) {
+  const pre = (s) => `<pre class="fin-debug-pre">${fe(s)}</pre>`;
+  const tokens = (u) => u && (u.prompt_tokens || u.completion_tokens)
+    ? ` · ${fcNum(u.prompt_tokens || 0)} tokens lus → ${fcNum(u.completion_tokens || 0)} écrits` : "";
+  const tries = (dbg.attempts || []).map((a) => `
+    <div class="fin-debug-try">
+      <p><b>${a.error ? "❌" : "✅"} ${fe(a.engine)}</b> <span class="muted">· ${fcNum(a.seconds, { dec: 1 })} s${tokens(a.usage)}</span></p>
+      ${a.error ? `<p class="fin-stale">${fe(a.error)}</p>` : ""}
+      ${a.reasoning ? `<details open><summary>Réflexion</summary>${pre(a.reasoning)}</details>`
+        : a.error ? "" : `<p class="muted">Ce modèle ne donne pas sa réflexion.</p>`}
+      ${a.raw ? `<details><summary>Réponse brute</summary>${pre(a.raw)}</details>` : ""}
+    </div>`).join("");
+  return `<div class="fin-debug">
+    <p class="muted">Envoyé : ${dbg.images ? `${dbg.images} image(s) + ` : ""}${fcNum((dbg.prompt || "").length)} caractères de texte</p>
+    ${tries || `<p class="muted">Aucun modèle n'a été essayé.</p>`}
+    <details><summary>Message envoyé (sans les images)</summary>${pre(dbg.prompt || "")}</details>
+  </div>`;
+}
+
+async function finDebug(id) {
+  const d = await api.get(`/api/finance/documents/${id}`);
+  finModal(`
+    <h3>🔍 Sous le capot</h3>
+    <p class="muted">${fe(d.filename)}${d.engine ? ` · ${fe(d.engine)}` : ""}</p>
+    ${d.debug ? finDebugHtml(d.debug) : `<p class="muted">Pas de trace pour ce document.</p>`}
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Fermer</button></div>`, { wide: true });
 }
 
 /* ------------------------------------------------------------------ RÉGLAGES */
@@ -1901,7 +1933,8 @@ async function finSettings(body) {
       <div class="card"><h3 class="fin-h3">🤖 Lecture des documents</h3>
         <label>Mode<select id="fs-llm-mode">${[["local_first", "Local d'abord, cloud en secours"], ["local_only", "Local seulement (rien ne sort)"], ["cloud_only", "Cloud (OpenRouter)"]].map(([k, l]) => `<option value="${k}"${s.llm.mode === k ? " selected" : ""}>${l}</option>`).join("")}</select></label>
         <label>Serveur local (compatible OpenAI)<input id="fs-llm-url" value="${fe(s.llm.local_base_url)}" placeholder="${fe(ai?.local.base_url || "http://localhost:11434/v1")}" /></label>
-        <label>Modèle<input id="fs-llm-model" value="${fe(s.llm.local_model)}" placeholder="${fe(ai?.local.model || "qwen2.5vl:7b")}" /></label>
+        <label>Modèle<input id="fs-llm-model" list="fs-llm-models" value="${fe(s.llm.local_model)}" placeholder="${fe(ai?.local.model || "qwen2.5vl:7b")}" /></label>
+        <datalist id="fs-llm-models">${(ai?.local.models || []).map((m) => `<option value="${fe(m)}"></option>`).join("")}</datalist>
         <label class="wz-check"><input type="checkbox" id="fs-llm-cloud"${s.llm.allow_cloud ? " checked" : ""} /> Autoriser le cloud si le local ne répond pas</label>
         <p class="muted">${ai ? (ai.local.reachable ? `🟢 ${fe(ai.local.base_url)} répond · modèles : ${fe(ai.local.models.join(", ") || "—")}` : `🟠 ${fe(ai.local.base_url)} ne répond pas. Avec Ollama : <code>ollama pull qwen2.5vl:7b</code>, et pour Docker, lancer Ollama avec <code>OLLAMA_HOST=0.0.0.0</code>.`) : ""} ${ai?.cloud.configured ? "· ☁️ OpenRouter configuré" : "· ☁️ pas de clé OpenRouter"}</p>
         <div class="modal-actions"><button class="btn btn-primary btn-sm" id="fs-save-llm">Enregistrer</button></div>

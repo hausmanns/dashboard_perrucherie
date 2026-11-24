@@ -5,7 +5,8 @@
 2. `parse()` (background thread): bank exports go through the deterministic
    readers (`importers/`); unknown tables get their columns mapped by the LLM;
    PDFs and photos are read by the LLM (text when the PDF has text, page
-   images when it is a scan). Result → `extracted`, status `review`.
+   images when it is a scan). Result → `extracted`, status `review`. What the
+   LLM was sent, its thinking and raw answer → `debug` (🔍 in Documents).
 3. `apply()` writes what the household confirmed: transactions + closing
    balance, positions, a salary, the LPP certificate, a 3a balance, a tax bill
    (calibration), a health-insurance premium…
@@ -59,7 +60,10 @@ Champs par type :
   avs_ai_apg_ac_aanp (chiffre 9), lpp_ordinary (chiffre 10.1), lpp_buyin (chiffre 10.2), free_transport (bool, lettre F),
   canteen (bool, lettre G), work_pct
 - lpp_certificate: person_name, fund, date, savings_balance (avoir de vieillesse), savings_credits_annual (bonifications
-  de vieillesse annuelles), employee_annual (cotisation salarié par an), employer_annual, insured_salary,
+  de vieillesse par an, salarié + employeur ; selon la caisse « cotisation d'épargne par an », « bonifications
+  d'épargne », « Altersgutschriften », « Sparbeitrag » ; épargne seulement, jamais la cotisation de risque),
+  employee_annual (cotisation totale du salarié par an, épargne + risque = déduction mensuelle × 12), employer_annual
+  (idem, part employeur), insured_salary,
   projected_capital_65, projected_pension_65 (rente annuelle), conversion_rate_pct, buyin_potential (rachat possible)
 - pillar3a_statement / vested_statement: person_name, provider, date, balance, contributions_year, currency
 - bank_statement: bank, iban, currency, period_start, period_end, opening_balance, closing_balance,
@@ -110,6 +114,8 @@ def store(filename: str, data: bytes, mime: str = "", member_id: int | None = No
 def _doc(row: dict) -> dict:
     row = dict(row)
     row["extracted"] = db.loads(row.get("extracted"), None)
+    if "debug" in row:
+        row["debug"] = db.loads(row["debug"], None)
     row["doc_type_label"] = DOC_TYPES.get(row.get("doc_type") or "", "")
     return row
 
@@ -127,6 +133,7 @@ def list_docs(limit: int = 100) -> list[dict]:
         rows = db.rows(conn.execute("SELECT * FROM documents ORDER BY uploaded_at DESC, id DESC LIMIT ?", (limit,)))
     out = []
     for r in rows:
+        r["has_debug"] = bool(r.pop("debug", None))  # the trace itself only comes with GET /documents/{id}
         d = _doc(r)
         ex = d.get("extracted") or {}
         if ex.get("transactions") and len(ex["transactions"]) > 5:
@@ -146,8 +153,9 @@ def delete(doc_id: int) -> None:
 
 
 def _set(doc_id: int, **fields) -> None:
-    if "extracted" in fields and not isinstance(fields["extracted"], (str, type(None))):
-        fields["extracted"] = json.dumps(fields["extracted"], default=_json_default)
+    for k in ("extracted", "debug"):
+        if k in fields and not isinstance(fields[k], (str, type(None))):
+            fields[k] = json.dumps(fields[k], default=_json_default)
     sets = ", ".join(f"{k} = ?" for k in fields)
     with db.get_conn() as conn:
         conn.execute(f"UPDATE documents SET {sets} WHERE id = ?", (*fields.values(), doc_id))
@@ -172,15 +180,17 @@ def parse_async(doc_id: int) -> None:
 
 def parse(doc_id: int) -> dict:
     d = get(doc_id)
-    _set(doc_id, status="parsing", error="")
+    _set(doc_id, status="parsing", error="", debug=None)
+    trace: dict = {}  # filled by the LLM call, kept even when it fails
     try:
         data = (db.docs_dir() / d["stored_name"]).read_bytes()
-        result = _parse(d, data)
+        result = _parse(d, data, trace)
         _set(doc_id, status="review", extracted=result, engine=result.get("engine", ""),
-             doc_type=result.get("doc_type", ""), parsed_at=datetime.now().isoformat(timespec="seconds"))
+             doc_type=result.get("doc_type", ""), parsed_at=datetime.now().isoformat(timespec="seconds"),
+             debug=trace or None)
     except Exception as e:  # noqa: BLE001 — every failure is shown to the user
         log.exception("document %s", doc_id)
-        _set(doc_id, status="error", error=str(e)[:500])
+        _set(doc_id, status="error", error=str(e)[:500], debug=trace or None)
     return get(doc_id)
 
 
@@ -209,14 +219,14 @@ def _tx_out(t: dict) -> dict:
     return {**t, "amount": float(t["amount"]), "balance": float(t["balance"]) if t.get("balance") is not None else None}
 
 
-def _parse(d: dict, data: bytes) -> dict:
+def _parse(d: dict, data: bytes, trace: dict | None = None) -> dict:
     parsed = parse_file(d["filename"], data)
     settings = db.get_settings()
     kind = parsed["kind"]
     if kind == "table":
         rows = [parsed.get("columns", [])] + parsed.get("rows", [])
         shown = "\n".join(f"{i}: " + " | ".join(r) for i, r in enumerate(rows[:12]))
-        mapping, engine = llm.chat_json(llm.text_message(MAPPING_PROMPT.format(rows=shown)), settings)
+        mapping, engine = llm.chat_json(llm.text_message(MAPPING_PROMPT.format(rows=shown)), settings, trace=trace)
         all_rows = tables.read_rows(d["filename"], data)
         parsed = tables.apply_mapping(all_rows, int(mapping.get("header_index", 0)),
                                       {k: v for k, v in (mapping.get("mapping") or {}).items() if v is not None})
@@ -247,7 +257,7 @@ def _parse(d: dict, data: bytes) -> dict:
                 from .importers.pdf import render_pages
                 images = render_pages(data)
             messages = llm.image_message(EXTRACT_PROMPT, images[:6])
-        answer, engine = llm.chat_json(messages, settings)
+        answer, engine = llm.chat_json(messages, settings, trace=trace)
         return _from_llm(answer, f"{parsed['engine']} → {engine}")
     raise ValueError("format non reconnu — essayez l'export CAMT.053 (XML), CSV ou PDF")
 
@@ -471,26 +481,33 @@ def _upsert_salary(member_id, values: dict, doc_id) -> dict:
     return {"income_id": rid, **values}
 
 
+def _pos(v):
+    """A salary amount or deduction, always positive: payslips print deductions as -412.60 and
+    some models (Nemotron 3.5 Bolt…) copy the minus sign."""
+    n = _num(v)
+    return abs(n) if n is not None else None
+
+
 def _apply_payslip(member_id, f: dict, doc_id) -> dict:
-    per_year = int(_num(f.get("salaries_per_year")) or 12)
-    gross_m = _num(f.get("gross_monthly"))
+    per_year = int(_pos(f.get("salaries_per_year")) or 12)
+    gross_m = _pos(f.get("gross_monthly"))
     vals = {
         "gross_annual_cents": to_cents(gross_m * per_year) if gross_m else None,
-        "net_annual_cents": to_cents(_num(f.get("net_monthly")) * per_year) if _num(f.get("net_monthly")) else None,
-        "work_pct": _num(f.get("work_pct")),
-        "lpp_employee_annual_cents": to_cents(_num(f.get("lpp_employee")) * 12) if _num(f.get("lpp_employee")) else None,
+        "net_annual_cents": to_cents(_pos(f.get("net_monthly")) * per_year) if _pos(f.get("net_monthly")) else None,
+        "work_pct": _pos(f.get("work_pct")),
+        "lpp_employee_annual_cents": to_cents(_pos(f.get("lpp_employee")) * 12) if _pos(f.get("lpp_employee")) else None,
         "employer": (f.get("employer") or None),
     }
-    if gross_m and _num(f.get("aanp")):
-        _patch_meta("members", int(member_id), {"aanp_rate": round(_num(f.get("aanp")) / gross_m, 4)})
+    if gross_m and _pos(f.get("aanp")):
+        _patch_meta("members", int(member_id), {"aanp_rate": round(_pos(f.get("aanp")) / gross_m, 4)})
     return _upsert_salary(member_id, vals, doc_id)
 
 
 def _apply_certificate(member_id, f: dict, doc_id) -> dict:
     vals = {
-        "gross_annual_cents": to_cents(_num(f.get("gross_total"))) if _num(f.get("gross_total")) else None,
-        "net_annual_cents": to_cents(_num(f.get("net_total"))) if _num(f.get("net_total")) else None,
-        "lpp_employee_annual_cents": to_cents(_num(f.get("lpp_ordinary"))) if _num(f.get("lpp_ordinary")) else None,
+        "gross_annual_cents": to_cents(_pos(f.get("gross_total"))) if _pos(f.get("gross_total")) else None,
+        "net_annual_cents": to_cents(_pos(f.get("net_total"))) if _pos(f.get("net_total")) else None,
+        "lpp_employee_annual_cents": to_cents(_pos(f.get("lpp_ordinary"))) if _pos(f.get("lpp_ordinary")) else None,
         "work_pct": _num(f.get("work_pct")),
         "employer": f.get("employer") or None,
     }
