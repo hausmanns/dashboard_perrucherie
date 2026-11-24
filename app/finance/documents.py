@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -44,40 +45,70 @@ DOC_TYPES = {
     "other": "Autre document",
 }
 
-EXTRACT_PROMPT = """Tu lis un document financier d'un ménage suisse (canton de Vaud).
+PROMPT_INTRO = "Tu lis un document financier d'un ménage suisse (canton de Vaud)."
+PROMPT_RULES = """montants en nombres (pas de texte, pas d'apostrophes), dates ISO AAAA-MM-JJ.
+N'invente rien : null quand l'information n'est pas dans le document."""
+PROMPT_FIELDS = {
+    "payslip": """person_name, employer, period (AAAA-MM), gross_monthly, net_monthly, work_pct, salaries_per_year
+  (12 ou 13), avs_ai_apg, ac, aanp, ijm, lpp_employee, family_allowance, currency""",
+    "salary_certificate": """person_name, employer, year, gross_total (chiffre 8), net_total (chiffre 11),
+  avs_ai_apg_ac_aanp (chiffre 9), lpp_ordinary (chiffre 10.1), lpp_buyin (chiffre 10.2), free_transport (bool, lettre F),
+  canteen (bool, lettre G), work_pct""",
+    "lpp_certificate": """person_name, fund, date, savings_balance (avoir de vieillesse), savings_credits_annual
+  (bonifications de vieillesse par an, salarié + employeur ; selon la caisse « cotisation d'épargne par an »,
+  « bonifications d'épargne », « Altersgutschriften », « Sparbeitrag » ; épargne seulement, jamais la cotisation de
+  risque), employee_annual (cotisation totale du salarié par an, épargne + risque = déduction mensuelle × 12),
+  employer_annual (idem, part employeur), insured_salary, projected_capital_65, projected_pension_65 (rente annuelle),
+  conversion_rate_pct, buyin_potential (rachat possible)""",
+    "pillar3a_statement": "person_name, provider, date, balance, contributions_year, currency",
+    "vested_statement": "person_name, provider, date, balance, contributions_year, currency",
+    "bank_statement": """person_name (titulaire), bank, iban, currency, period_start, period_end, opening_balance,
+  closing_balance, transactions (liste {date, amount (négatif = débit), description})""",
+    "broker_statement": """person_name (titulaire), broker, date, currency, total_value, cash, holdings (liste {name,
+  symbol (ticker boursier seulement s'il est imprimé, sinon null, jamais le nom), isin (12 caractères, ex.
+  CH0012032048), valor (n° de valeur suisse : « Valor », « Valor-Nr. », « N° de valeur », chiffres seulement),
+  quantity (nombre de titres), price (cours d'UN titre), value (valeur de la ligne = quantity × price),
+  currency (code ISO de la cotation : CHF, USD, EUR…), asset_class (equity, bonds, crypto, real_estate, commodity
+  ou cash)})""",
+    "tax_assessment": """person_name, year, authority (ICC ou IFD ou les deux), taxable_income (revenu imposable ICC),
+  rate_income (revenu déterminant pour le taux), taxable_wealth, icc_amount (impôt cantonal + communal),
+  ifd_amount, ifd_taxable_income""",
+    "insurance_premium": "person_name, insurer, year, monthly_premium, franchise, model",
+    "other": "description",
+}
+PROMPT_ANSWER = """Réponds uniquement en JSON : {"doc_type": "%s", "confidence": 0.0-1.0, "summary": "une phrase en
+français", "fields": {...}}"""
+_FIELD_LINES = "\n".join(f"- {k}: {v}" for k, v in PROMPT_FIELDS.items())
+
+EXTRACT_PROMPT = f"""{PROMPT_INTRO}
 1) Identifie son type : payslip (fiche de salaire mensuelle), salary_certificate (certificat de salaire annuel,
 formulaire 11), lpp_certificate (certificat de prévoyance / caisse de pension), pillar3a_statement (attestation ou
 relevé 3e pilier A), vested_statement (libre passage), bank_statement (relevé de compte), broker_statement (relevé
 de dépôt titres), tax_assessment (décision de taxation ou bordereau ICC/IFD), insurance_premium (police ou facture
 d'assurance maladie LAMal), other.
-2) Extrais les champs du type, montants en nombres (pas de texte, pas d'apostrophes), dates ISO AAAA-MM-JJ.
-N'invente rien : null quand l'information n'est pas dans le document.
+Attention : un « relevé fiscal » ou « état des titres » envoyé par une banque ou un courtier (liste de titres,
+comptes, cryptos et leurs valeurs) est un broker_statement. tax_assessment vient de l'administration fiscale et
+donne l'impôt à payer.
+2) Extrais les champs du type, {PROMPT_RULES}
 
 Champs par type :
-- payslip: person_name, employer, period (AAAA-MM), gross_monthly, net_monthly, work_pct, salaries_per_year (12 ou 13),
-  avs_ai_apg, ac, aanp, ijm, lpp_employee, family_allowance, currency
-- salary_certificate: person_name, employer, year, gross_total (chiffre 8), net_total (chiffre 11),
-  avs_ai_apg_ac_aanp (chiffre 9), lpp_ordinary (chiffre 10.1), lpp_buyin (chiffre 10.2), free_transport (bool, lettre F),
-  canteen (bool, lettre G), work_pct
-- lpp_certificate: person_name, fund, date, savings_balance (avoir de vieillesse), savings_credits_annual (bonifications
-  de vieillesse par an, salarié + employeur ; selon la caisse « cotisation d'épargne par an », « bonifications
-  d'épargne », « Altersgutschriften », « Sparbeitrag » ; épargne seulement, jamais la cotisation de risque),
-  employee_annual (cotisation totale du salarié par an, épargne + risque = déduction mensuelle × 12), employer_annual
-  (idem, part employeur), insured_salary,
-  projected_capital_65, projected_pension_65 (rente annuelle), conversion_rate_pct, buyin_potential (rachat possible)
-- pillar3a_statement / vested_statement: person_name, provider, date, balance, contributions_year, currency
-- bank_statement: bank, iban, currency, period_start, period_end, opening_balance, closing_balance,
-  transactions (liste {date, amount (négatif = débit), description})
-- broker_statement: broker, date, currency, total_value, cash, holdings (liste {name, symbol, isin, quantity, price,
-  currency, value})
-- tax_assessment: person_name, year, authority (ICC ou IFD ou les deux), taxable_income (revenu imposable ICC),
-  rate_income (revenu déterminant pour le taux), taxable_wealth, icc_amount (impôt cantonal + communal),
-  ifd_amount, ifd_taxable_income
-- insurance_premium: person_name, insurer, year, monthly_premium, franchise, model
-- other: description
+{_FIELD_LINES}
 
-Réponds uniquement en JSON : {"doc_type": "...", "confidence": 0.0-1.0, "summary": "une phrase en français",
-"fields": {...}}"""
+{PROMPT_ANSWER % "..."}"""
+
+
+def extract_prompt(doc_type: str = "") -> str:
+    """The full prompt (the model guesses the type), or, when the household chose the type,
+    a short one with only that type's fields — easier for a small local model."""
+    if doc_type not in PROMPT_FIELDS:
+        return EXTRACT_PROMPT
+    return f"""{PROMPT_INTRO}
+Le ménage a indiqué son type : {doc_type} ({DOC_TYPES[doc_type]}). Ne le remets pas en question.
+Extrais ces champs, {PROMPT_RULES}
+
+Champs : {PROMPT_FIELDS[doc_type]}
+
+{PROMPT_ANSWER % doc_type}"""
 
 MAPPING_PROMPT = """Voici le début d'un export bancaire (tableau). Indique quelle colonne contient quoi.
 Lignes (index: cellules séparées par |) :
@@ -91,8 +122,22 @@ Réponds en JSON : {{"header_index": <index de la ligne d'en-tête>, "mapping": 
 # --------------------------------------------------------------------------- store / list
 
 
+def check_type(doc_type: str | None) -> str:
+    """'' = let the model guess; otherwise one of DOC_TYPES."""
+    doc_type = (doc_type or "").strip()
+    if doc_type and doc_type not in DOC_TYPES:
+        raise ValueError(f"type de document inconnu : {doc_type}")
+    return doc_type
+
+
+def set_hint(doc_id: int, doc_type: str | None) -> None:
+    _set(doc_id, hint_type=check_type(doc_type))
+
+
 def store(filename: str, data: bytes, mime: str = "", member_id: int | None = None,
-          account_id: int | None = None) -> dict:
+          account_id: int | None = None, hint_type: str = "") -> dict:
+    """`hint_type`: the type the household chose at upload ('' = the model guesses)."""
+    hint_type = check_type(hint_type)
     if len(data) > MAX_BYTES:
         raise ValueError("fichier trop lourd (25 Mo max)")
     sha = hashlib.sha256(data).hexdigest()
@@ -104,8 +149,9 @@ def store(filename: str, data: bytes, mime: str = "", member_id: int | None = No
         stored = f"{sha[:32]}.{ext}"
         (db.docs_dir() / stored).write_bytes(data)
         cur = conn.execute(
-            "INSERT INTO documents (filename, stored_name, mime, size, sha256, member_id, account_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)", (filename[:200], stored, mime[:100], len(data), sha, member_id, account_id))
+            "INSERT INTO documents (filename, stored_name, mime, size, sha256, member_id, account_id, hint_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (filename[:200], stored, mime[:100], len(data), sha, member_id, account_id, hint_type))
         doc_id = cur.lastrowid
     gamify.award("document", str(doc_id), 25, "Document ajouté")
     return get(doc_id)
@@ -117,6 +163,7 @@ def _doc(row: dict) -> dict:
     if "debug" in row:
         row["debug"] = db.loads(row["debug"], None)
     row["doc_type_label"] = DOC_TYPES.get(row.get("doc_type") or "", "")
+    row["hint_type"] = row.get("hint_type") or ""
     return row
 
 
@@ -248,17 +295,19 @@ def _parse(d: dict, data: bytes, trace: dict | None = None) -> dict:
                 "summary": f"{len(hs)} positions", "account_hint": parsed.get("account", {}),
                 "account_id": _match_account(parsed.get("account", {})), "fields": {"holdings": hs}}
     if kind in ("pdf", "image"):
+        hint = d.get("hint_type") or ""
+        prompt = extract_prompt(hint)
         if kind == "pdf" and not parsed.get("scanned"):
             text = parsed["text"][:30_000]
-            messages = llm.text_message(EXTRACT_PROMPT + "\n\nTexte du document :\n" + text)
+            messages = llm.text_message(prompt + "\n\nTexte du document :\n" + text)
         else:
             images = parsed.get("images") or []
             if kind == "pdf" and not images:
                 from .importers.pdf import render_pages
                 images = render_pages(data)
-            messages = llm.image_message(EXTRACT_PROMPT, images[:6])
+            messages = llm.image_message(prompt, images[:6])
         answer, engine = llm.chat_json(messages, settings, trace=trace)
-        return _from_llm(answer, f"{parsed['engine']} → {engine}")
+        return _from_llm(answer, f"{parsed['engine']} → {engine}", forced_type=hint)
     raise ValueError("format non reconnu — essayez l'export CAMT.053 (XML), CSV ou PDF")
 
 
@@ -271,8 +320,12 @@ def _num(v):
         return None
 
 
-def _from_llm(answer: dict, engine: str) -> dict:
-    doc_type = answer.get("doc_type") if answer.get("doc_type") in DOC_TYPES else "other"
+def _from_llm(answer: dict, engine: str, forced_type: str = "") -> dict:
+    """`forced_type`: chosen by the household, it wins over the model's guess."""
+    if forced_type in DOC_TYPES:
+        doc_type = forced_type
+    else:
+        doc_type = answer.get("doc_type") if answer.get("doc_type") in DOC_TYPES else "other"
     fields = answer.get("fields") or {}
     out = {"doc_type": doc_type, "engine": engine, "confidence": float(answer.get("confidence") or 0.5),
            "summary": str(answer.get("summary") or "")[:300], "fields": fields,
@@ -297,6 +350,62 @@ def _from_llm(answer: dict, engine: str) -> dict:
             except ValueError:
                 pass
         out["balances"] = bals
+    elif doc_type == "broker_statement":
+        fields["holdings"] = _clean_holdings(fields)
+    return out
+
+
+def _ids(isin, valor) -> tuple[str, str]:
+    """(ISIN, Valor). A Swiss statement often prints only the Valor (« 1'203'204 »): digits, which
+    small models put in `isin`. A Valor is not an ISIN: keep each in its own place, drop what is neither."""
+    def text(v) -> str:  # a model may answer 1203204 or 1203204.0 as a number
+        return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v or "")
+    isin = re.sub(r"[\s'’.\-]", "", text(isin)).upper()
+    valor = re.sub(r"[\s'’.\-]", "", text(valor))
+    if isin.isdigit() and not valor:
+        valor = isin
+    if not re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}\d", isin):
+        isin = ""
+    if not re.fullmatch(r"\d{3,12}", valor):
+        valor = ""
+    return isin, valor
+
+
+ISO_CURRENCIES = {"CHF", "EUR", "USD", "GBP", "JPY", "CAD", "AUD", "SEK", "NOK", "DKK", "HKD", "SGD", "CNY", "NZD",
+                  "PLN", "CZK"}
+ASSET_CLASSES = {"equity", "bonds", "cash", "real_estate", "crypto", "commodity"}
+
+
+def _clean_holdings(fields: dict) -> list[dict]:
+    """Small models fill every slot they are given. On a Yuh tax statement (no tickers printed)
+    Nemotron 3.5 Bolt copied the name into `symbol` (« ROCHE GS »: no live price can be found),
+    the share price into `value`, and a coin's own code (« SWQ ») into `currency`."""
+    doc_cur = str(fields.get("currency") or "").strip().upper()
+    doc_cur = doc_cur if doc_cur in ISO_CURRENCIES else "CHF"
+    out = []
+    for h in fields.get("holdings") or []:
+        if not isinstance(h, dict):
+            continue
+        h = dict(h)
+        name = str(h.get("name") or "").strip()
+        sym = str(h.get("symbol") or "").strip().upper()
+        if " " in sym or (name and sym == name.upper()):
+            sym = ""  # a name, not a ticker: better none than a wrong one
+        h["symbol"] = sym
+        h["isin"], h["valor"] = _ids(h.get("isin"), h.get("valor"))
+        if h.get("asset_class") not in ASSET_CLASSES:
+            h.pop("asset_class", None)
+        cur = str(h.get("currency") or "").strip().upper()
+        if cur not in ISO_CURRENCIES:
+            if cur and cur == sym:  # « 930 SWQ »: counted in its own coin
+                h.setdefault("asset_class", "crypto")
+            cur = doc_cur
+        h["currency"] = cur
+        q, p, v = _num(h.get("quantity")), _num(h.get("price")), _num(h.get("value"))
+        if q and p and v and abs(q - 1) > 0.01 and abs(v - p) <= 0.005 * abs(p):
+            v = round(q * p, 2)  # the share price was copied as the line's value
+        h.update(quantity=q, price=p, value=v)
+        out.append(h)
     return out
 
 
@@ -396,14 +505,15 @@ def _patch_meta(table: str, row_id: int, patch: dict) -> None:
 
 
 def _create_account(spec: dict, ex: dict, member_id) -> int:
+    """`spec["owners"]`, when given, wins — even {} (shared equally): the household chose."""
     hint = ex.get("account_hint") or {}
-    owners = {str(member_id): 1.0} if member_id else {}
+    owners = spec["owners"] if isinstance(spec.get("owners"), dict) else {str(member_id): 1.0} if member_id else {}
     with db.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO accounts (name, institution, kind, currency, owners, iban, valuation) VALUES (?,?,?,?,?,?,?)",
             (spec.get("name") or hint.get("institution") or "Nouveau compte", spec.get("institution") or
              hint.get("institution") or "", spec.get("kind") or "current",
-             (spec.get("currency") or hint.get("currency") or "CHF").upper(), json.dumps(spec.get("owners") or owners),
+             (spec.get("currency") or hint.get("currency") or "CHF").upper(), json.dumps(owners),
              hint.get("iban") or "", spec.get("valuation") or "manual"))
         return cur.lastrowid
 
@@ -428,21 +538,26 @@ def _apply_holdings(account_id: int, holdings: list[dict], fields: dict) -> dict
             qty = _num(h.get("quantity"))
             if qty is None:
                 continue
-            sym, isin, name = (h.get("symbol") or "").strip(), (h.get("isin") or "").strip(), (h.get("name") or "").strip()
+            sym, name = (h.get("symbol") or "").strip(), (h.get("name") or "").strip()
+            isin, valor = (h.get("isin") or "").strip(), (h.get("valor") or "").strip()
             price = _num(h.get("price"))
             if price is None and _num(h.get("value")) and qty:
                 price = _num(h.get("value")) / qty
             existing = conn.execute(
-                "SELECT id FROM holdings WHERE account_id = ? AND ((symbol != '' AND symbol = ?) OR (isin != '' AND isin = ?) "
-                "OR name = ?)", (account_id, sym, isin, name or sym)).fetchone()
-            vals = (sym, isin, name or sym or isin, qty, (h.get("currency") or "CHF").upper()[:3],
+                "SELECT id, symbol FROM holdings WHERE account_id = ? AND ((symbol != '' AND symbol = ?) "
+                "OR (isin != '' AND isin = ?) OR (valor != '' AND valor = ?) OR name = ?)",
+                (account_id, sym, isin, valor, name or sym)).fetchone()
+            # a ticker typed by hand is kept when the statement prints none
+            sym = sym or (existing["symbol"] if existing else "")
+            vals = (sym, isin, valor, name or sym or isin or valor, qty, (h.get("currency") or "CHF").upper()[:3],
                     h.get("asset_class") or "equity", price)
             if existing:
-                conn.execute("UPDATE holdings SET symbol=?, isin=?, name=?, quantity=?, currency=?, asset_class=?, "
-                             "manual_price=?, updated_at=datetime('now') WHERE id = ?", (*vals, existing["id"]))
+                conn.execute("UPDATE holdings SET symbol=?, isin=?, valor=?, name=?, quantity=?, currency=?, "
+                             "asset_class=?, manual_price=?, updated_at=datetime('now') WHERE id = ?",
+                             (*vals, existing["id"]))
             else:
-                conn.execute("INSERT INTO holdings (account_id, symbol, isin, name, quantity, currency, asset_class, "
-                             "manual_price) VALUES (?,?,?,?,?,?,?,?)", (account_id, *vals))
+                conn.execute("INSERT INTO holdings (account_id, symbol, isin, valor, name, quantity, currency, "
+                             "asset_class, manual_price) VALUES (?,?,?,?,?,?,?,?,?)", (account_id, *vals))
             n += 1
     if _num(fields.get("cash")) is not None:
         _patch_meta("accounts", account_id, {"cash": _num(fields.get("cash"))})

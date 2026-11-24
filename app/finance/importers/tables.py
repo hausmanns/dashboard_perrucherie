@@ -47,7 +47,8 @@ ROLE_WORDS: dict[str, list[str]] = {
     "reference": ["reference", "référence", "referenz", "transaction no", "transaction id", "id", "transferwise id"],
     "fee": ["fee", "frais", "gebuhr", "gebühr"],
     # holdings
-    "symbol": ["symbol", "ticker", "symbole", "valor", "valeur symbole"],
+    "symbol": ["symbol", "ticker", "symbole", "valeur symbole"],
+    "valor": ["valor", "valor nr", "valor no", "valoren nr", "valorennummer", "n de valeur", "no de valeur"],
     "isin": ["isin", "symbol/isin", "symbole/isin"],
     "name": ["product", "produit", "instrument", "titre", "security", "wertschrift", "designation", "désignation",
              "description titre"],
@@ -109,7 +110,7 @@ def _find_header(rows: list[list[str]]) -> int | None:
         roles = _roles(row)
         if ("date" in roles or "value_date" in roles) and ({"amount", "debit", "credit"} & roles.keys()):
             return i
-        if "quantity" in roles and ({"symbol", "isin", "name"} & roles.keys()):
+        if "quantity" in roles and ({"symbol", "isin", "valor", "name"} & roles.keys()):
             return i
     return None
 
@@ -256,11 +257,13 @@ def _holdings(header, body, roles, engine, account) -> dict:
         name = _cell(r, roles.get("name"))
         sym = _cell(r, roles.get("symbol"))
         isin = _cell(r, roles.get("isin"))
+        valor = re.sub(r"[\s'’.]", "", _cell(r, roles.get("valor")))
+        valor = valor if valor.isdigit() else ""
         if isin and not re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}\d", isin):
             if not sym:
                 sym = isin
             isin = ""
-        if not (name or sym or isin):
+        if not (name or sym or isin or valor):
             continue
         try:
             qty = parse_amount(_cell(r, roles.get("quantity")), sep)
@@ -273,8 +276,8 @@ def _holdings(header, body, roles, engine, account) -> dict:
             except AmountError:
                 return None
         cls = _cell(r, roles.get("asset_class")).lower()
-        out.append({"symbol": sym, "isin": isin, "name": name or sym or isin, "quantity": qty,
-                    "price": num("price"), "value": num("value"),
+        out.append({"symbol": sym, "isin": isin, "valor": valor, "name": name or sym or isin or valor,
+                    "quantity": qty, "price": num("price"), "value": num("value"),
                     "currency": (_cell(r, roles.get("currency")) or "").upper()[:3],
                     "asset_class": "bonds" if "bond" in cls or "oblig" in cls else
                     "cash" if "cash" in cls else "crypto" if "crypto" in cls else "equity"})

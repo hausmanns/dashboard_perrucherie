@@ -1117,7 +1117,7 @@ async function finAccountModal(id = null) {
         <label>Rachat possible${finMoneyInput("fa-buyin", meta.buyin_potential)}</label></div>
     </div>
     <label class="wz-check"><input type="checkbox" id="fa-fi"${a.include_in_fi ? " checked" : ""} /> Compte dans le plan de liberté${finQ("include_in_fi")}</label>
-    ${a.holdings ? `<h4 class="wz-h4">Positions</h4><div class="fin-holdings">${a.holdings.map((h) => `<div class="fin-hold"><span>${fe(h.symbol || h.isin)}</span><span>${fe(h.name)}</span><span>${fcNum(h.quantity, { dec: 2 })}</span><b>${chf(h.value_chf)}</b><button class="icon-btn" data-hdel="${h.id}">🗑️</button></div>`).join("")}</div>` : ""}
+    ${a.holdings ? `<h4 class="wz-h4">Positions</h4><div class="fin-holdings">${a.holdings.map((h) => `<div class="fin-hold"><span title="${h.symbol ? "ticker" : h.isin ? "ISIN" : h.valor ? "n° de valeur" : ""}">${fe(h.symbol || h.isin || h.valor || "—")}</span><span>${fe(h.name)}</span><span>${fcNum(h.quantity, { dec: 2 })}</span><b>${chf(h.value_chf)}</b><span class="fin-hold-btns"><button type="button" class="icon-btn" data-hedit="${h.id}" title="Modifier">✏️</button><button type="button" class="icon-btn" data-hdel="${h.id}" title="Supprimer">🗑️</button></span></div>`).join("")}</div>` : ""}
     ${id ? `<p><button type="button" class="btn btn-ghost btn-sm" id="fa-hold">+ Position (titre / ETF)</button>${finQ("holdings")}</p>` : ""}
     <div class="modal-actions">
       ${id ? `<button type="button" class="btn btn-ghost fin-danger-btn" id="fa-del">Supprimer</button>` : ""}
@@ -1147,28 +1147,41 @@ async function finAccountModal(id = null) {
     }
   };
   if ($("#fa-hold")) $("#fa-hold").onclick = () => finHoldingModal(id);
+  dlg.querySelectorAll("[data-hedit]").forEach((b) => b.onclick = () => finHoldingModal(id, a.holdings.find((h) => h.id === +b.dataset.hedit)));
   dlg.querySelectorAll("[data-hdel]").forEach((b) => b.onclick = async () => { await api.del(`/api/finance/holdings/${b.dataset.hdel}`); finAccountModal(id); });
 }
 
-function finHoldingModal(accountId) {
+/** Add a position, or edit `h` (a position of the account). */
+function finHoldingModal(accountId, h = null) {
+  const v = h || { currency: "CHF", asset_class: "equity" };
+  const curs = [...new Set(["CHF", "USD", "EUR", "GBP", v.currency])];
+  const classes = { equity: "Actions", bonds: "Obligations", real_estate: "Immobilier coté", crypto: "Crypto", cash: "Liquidités", commodity: "Matières premières" };
+  const num = (x) => (x == null ? "" : String(x));
   const dlg = finModal(`
-    <h3>Nouvelle position</h3>
-    <p class="muted">Le symbole Yahoo Finance fait vivre la valeur tout seul : <code>VT</code>, <code>CHSPI.SW</code>, <code>VWRL.SW</code>, <code>BTC-USD</code>…</p>
-    <div class="field-row"><label>Symbole<input id="fh-sym" placeholder="VT" /></label><label>ISIN<input id="fh-isin" /></label></div>
-    <label>Nom<input id="fh-name" placeholder="Vanguard Total World" /></label>
-    <div class="field-row"><label>Quantité<input id="fh-qty" type="text" inputmode="decimal" /></label>
-      <label>Devise<select id="fh-cur"><option>CHF</option><option>USD</option><option>EUR</option><option>GBP</option></select></label></div>
-    <div class="field-row"><label>Classe<select id="fh-class"><option value="equity">Actions</option><option value="bonds">Obligations</option><option value="real_estate">Immobilier coté</option><option value="crypto">Crypto</option><option value="cash">Liquidités</option><option value="commodity">Matières premières</option></select></label>
-      <label>Prix manuel <small class="muted">(si pas de cours)</small><input id="fh-price" type="text" inputmode="decimal" /></label></div>
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Annuler</button><button type="button" class="btn btn-primary" id="fh-save">Ajouter</button></div>`);
+    <h3>${h ? "Modifier la position" : "Nouvelle position"}</h3>
+    <p class="muted">Le symbole Yahoo Finance fait vivre la valeur tout seul : <code>VT</code>, <code>CHSPI.SW</code>, <code>NESN.SW</code>, <code>NVDA</code>, <code>BTC-USD</code>…</p>
+    <div class="field-row"><label>Symbole<input id="fh-sym" placeholder="VT" value="${fe(v.symbol || "")}" /></label>
+      <label>ISIN<input id="fh-isin" value="${fe(v.isin || "")}" /></label>
+      <label>N° de valeur<input id="fh-valor" inputmode="numeric" value="${fe(v.valor || "")}" placeholder="Valor" /></label></div>
+    <label>Nom<input id="fh-name" placeholder="Vanguard Total World" value="${fe(v.name || "")}" /></label>
+    <div class="field-row"><label>Quantité<input id="fh-qty" type="text" inputmode="decimal" value="${num(v.quantity)}" /></label>
+      <label>Devise<select id="fh-cur">${curs.map((c) => `<option${c === v.currency ? " selected" : ""}>${fe(c)}</option>`).join("")}</select></label></div>
+    <div class="field-row"><label>Classe<select id="fh-class">${Object.entries(classes).map(([k, l]) => `<option value="${k}"${k === v.asset_class ? " selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label>Prix manuel <small class="muted">(si pas de cours)</small><input id="fh-price" type="text" inputmode="decimal" value="${num(v.manual_price)}" /></label></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Annuler</button><button type="button" class="btn btn-primary" id="fh-save">${h ? "Enregistrer" : "Ajouter"}</button></div>`);
   $("#fh-save").onclick = async () => {
+    const body = {
+      symbol: $("#fh-sym").value, isin: $("#fh-isin").value, valor: $("#fh-valor").value,
+      name: $("#fh-name").value || $("#fh-sym").value || "Position",
+      quantity: finParse($("#fh-qty").value) || 0, currency: $("#fh-cur").value, asset_class: $("#fh-class").value,
+      manual_price: finParse($("#fh-price").value), cost_basis: h ? h.cost_basis : null,
+    };
     try {
-      await api.post(`/api/finance/accounts/${accountId}/holdings`, {
-        symbol: $("#fh-sym").value, isin: $("#fh-isin").value, name: $("#fh-name").value || $("#fh-sym").value || "Position",
-        quantity: finParse($("#fh-qty").value) || 0, currency: $("#fh-cur").value, asset_class: $("#fh-class").value,
-        manual_price: finParse($("#fh-price").value),
-      });
-      dlg.close(); finRenderTab();
+      if (h) await api.put(`/api/finance/holdings/${h.id}`, body);
+      else await api.post(`/api/finance/accounts/${accountId}/holdings`, body);
+      dlg.close();
+      finRenderTab();
+      if (h) finAccountModal(accountId);  // back to the account, with the new value
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -1725,6 +1738,8 @@ async function finUpload(files) {
   if (!files.length) return;
   const fd = new FormData();
   files.forEach((f) => fd.append("files", f));
+  const type = $("#fin-up-type")?.value;  // chosen type guides the AI; empty = it guesses
+  if (type) fd.append("doc_type", type);
   toast(`Envoi de ${files.length} document(s)…`);
   try {
     const res = await fetch("/api/finance/documents", { method: "POST", body: fd });
@@ -1749,12 +1764,18 @@ async function finDocs(body) {
         <p>Relevés <b>CAMT.053</b> (XML) ou <b>CSV</b> · positions de courtier · fiches et certificats de salaire · certificat <b>LPP</b> ·
         attestations 3a · décision de taxation · police LAMal. PDF ou photo.</p>
         <p class="muted fin-ai-line">${aiLine}</p></div>
-      <button class="btn btn-primary" id="fin-pick">Choisir des fichiers</button>
+      <div class="fin-drop-actions">
+        <select id="fin-up-type" title="Indiquer le type aide l'IA : elle ne cherche que les bons champs">
+          <option value="">🤖 Type : l'IA devine</option>
+          ${Object.entries(fin.status.doc_types).map(([k, l]) => `<option value="${k}">📌 ${fe(l)}</option>`).join("")}
+        </select>
+        <button class="btn btn-primary" id="fin-pick">Choisir des fichiers</button>
+      </div>
     </div>
     <div class="fin-docs">${docs.map((d) => `
       <div class="card fin-doc fin-doc-${d.status}">
         <div class="info"><strong>${fe(d.filename)}</strong>
-          <small>${statusLbl[d.status] || d.status}${d.doc_type_label ? ` · ${fe(d.doc_type_label)}` : ""}${d.engine ? ` · <span title="lu par">${fe(d.engine)}</span>` : ""} · ${new Date(d.uploaded_at + "Z").toLocaleDateString("fr-CH")}</small>
+          <small>${statusLbl[d.status] || d.status}${d.doc_type_label ? ` · ${d.hint_type ? `<span title="type choisi par vous">📌 </span>` : ""}${fe(d.doc_type_label)}` : ""}${d.engine ? ` · <span title="lu par">${fe(d.engine)}</span>` : ""} · ${new Date(d.uploaded_at + "Z").toLocaleDateString("fr-CH")}</small>
           ${d.extracted?.summary ? `<small>${fe(d.extracted.summary)}</small>` : ""}${d.error ? `<small class="fin-stale">${fe(d.error)}</small>` : ""}</div>
         <div class="plan-actions">
           ${d.status === "review" ? `<button class="btn btn-primary btn-sm" data-review="${d.id}">Vérifier</button>` : ""}
@@ -1798,11 +1819,14 @@ async function finReview(id) {
   const [d, accounts] = await Promise.all([api.get(`/api/finance/documents/${id}`), api.get("/api/finance/accounts")]);
   const ex = d.extracted || {};
   const t = ex.doc_type;
+  // Read by the AI (not a CAMT/CSV reader): its type can be wrong, so it can be changed and re-read.
+  const aiRead = !!d.debug || (t && t !== "bank_statement" && t !== "broker_statement");
   const adults = finAdults();
   const memberSel = (sel) => `<label>Pour qui ?<select id="fr-member"><option value="">—</option>${adults.map((m) => `<option value="${m.id}"${sel === m.id ? " selected" : ""}>${m.emoji} ${fe(m.name)}</option>`).join("")}</select></label>`;
   const accSel = (kinds, sel) => `<label>Compte<select id="fr-account"><option value="">— choisir —</option>${accounts.filter((a) => !kinds || kinds.includes(a.kind)).map((a) => `<option value="${a.id}"${sel === a.id ? " selected" : ""}>${a.emoji} ${fe(a.name)}</option>`).join("")}<option value="new"${!sel && ex.account_hint?.iban ? " selected" : ""}>+ Nouveau compte…</option></select></label>
-    <div id="fr-new" class="${!sel && ex.account_hint?.iban ? "" : "hidden "}field-row"><label>Nom<input id="fr-new-name" value="${fe(ex.account_hint?.institution || "Compte")}" /></label>
-      <label>Type<select id="fr-new-kind">${FIN_KIND_ORDER.map((k) => `<option value="${k}">${fin.status.account_kinds[k].emoji} ${fe(fin.status.account_kinds[k].label)}</option>`).join("")}</select></label></div>`;
+    <div id="fr-new" class="${!sel && ex.account_hint?.iban ? "" : "hidden "}field-row"><label>Nom<input id="fr-new-name" value="${fe(ex.account_hint?.institution || ex.fields?.broker || ex.fields?.bank || "Compte")}" /></label>
+      <label>Type<select id="fr-new-kind">${FIN_KIND_ORDER.map((k) => `<option value="${k}"${kinds?.[0] === k ? " selected" : ""}>${fin.status.account_kinds[k].emoji} ${fe(fin.status.account_kinds[k].label)}</option>`).join("")}</select></label>
+      <label>À qui ?<select id="fr-new-owner"><option value="">👥 Commun (parts égales)</option>${adults.map((m) => `<option value="${m.id}"${ex.member_id === m.id ? " selected" : ""}>${m.emoji} ${fe(m.name)}</option>`).join("")}</select></label></div>`;
   let main = "";
   if (t === "bank_statement") {
     const txs = ex.transactions || [];
@@ -1816,9 +1840,10 @@ async function finReview(id) {
       ${txs.length > 8 ? `<p class="muted">… et ${txs.length - 8} autres. Les doublons d'un import précédent sont ignorés.</p>` : ""}`;
   } else if (t === "broker_statement") {
     const hs = ex.fields?.holdings || [];
+    const noTicker = hs.filter((h) => !h.symbol).length;
     main = `${accSel(["invest", "crypto", "pillar3a", "vested"], ex.account_id)}
-      <div class="fin-holdings">${hs.map((h) => `<div class="fin-hold"><span>${fe(h.symbol || h.isin)}</span><span>${fe(h.name)}</span><span>${fcNum(h.quantity, { dec: 2 })}</span><b>${h.value != null ? fcNum(h.value) + " " + fe(h.currency || "") : ""}</b></div>`).join("")}</div>
-      <p class="muted">Les positions remplaceront celles du compte ; la valeur suivra ensuite les cours en ligne.</p>`;
+      <div class="fin-holdings">${hs.map((h) => `<div class="fin-hold"><span title="${h.symbol ? "ticker" : h.isin ? "ISIN" : h.valor ? "n° de valeur" : ""}">${fe(h.symbol || h.isin || h.valor || "—")}</span><span>${fe(h.name)}</span><span>${fcNum(h.quantity, { dec: 2 })}${h.price != null ? `<br><small class="muted">× ${fcNum(h.price, { dec: 2 })}</small>` : ""}</span><b>${h.value != null ? fcNum(h.value) + " " + fe(h.currency || "") : ""}</b></div>`).join("")}</div>
+      <p class="muted">Les positions remplaceront celles du compte ; la valeur suivra ensuite les cours en ligne.${noTicker ? ` ${noTicker} position(s) sans ticker : leur valeur reste celle du document. Ajoutez le ticker dans le compte (ex. NESN.SW) pour suivre les cours.` : ""}</p>`;
   } else {
     const fields = ex.fields || {};
     main = `${t === "tax_assessment" ? memberSel(ex.member_id).replace('<option value="">—</option>', '<option value="">Ménage (marié·es)</option>') : t === "other" ? "" : memberSel(ex.member_id)}
@@ -1830,7 +1855,8 @@ async function finReview(id) {
     <h3>${fe(d.doc_type_label || "Document")}</h3>
     <p class="muted">${fe(d.filename)} · lu par ${fe(d.engine)}${ex.confidence != null && ex.confidence < 1 ? ` · confiance ${pct(ex.confidence)}` : ""}</p>
     ${ex.summary ? `<p>${fe(ex.summary)}</p>` : ""}
-    ${t && t !== "bank_statement" && t !== "broker_statement" ? `<label>Type de document<select id="fr-type">${Object.entries(fin.status.doc_types).map(([k, l]) => `<option value="${k}"${t === k ? " selected" : ""}>${fe(l)}</option>`).join("")}</select></label>` : ""}
+    ${t && aiRead ? `<div class="fin-type-row"><label>Type de document<select id="fr-type">${Object.entries(fin.status.doc_types).map(([k, l]) => `<option value="${k}"${t === k ? " selected" : ""}>${fe(l)}</option>`).join("")}</select></label>
+      <button type="button" class="btn btn-ghost btn-sm hidden" id="fr-reread">🔁 Relire comme ce type</button></div>` : ""}
     ${main}
     <p class="muted fin-check">Vérifiez les chiffres : l'IA peut se tromper, rien n'est écrit avant « Appliquer ».</p>
     ${d.debug ? `<details class="fin-debug-fold"><summary>🔍 Sous le capot</summary>${finDebugHtml(d.debug)}</details>` : ""}
@@ -1840,11 +1866,32 @@ async function finReview(id) {
       ${t === "other" ? "" : `<button type="button" class="btn btn-primary" id="fr-apply">Appliquer ✓</button>`}
     </div>`, { wide: true });
   if ($("#fr-account")) $("#fr-account").onchange = (e) => $("#fr-new").classList.toggle("hidden", e.target.value !== "new");
+  if ($("#fr-type")) {
+    // Statements carry a list (operations, positions), not simple fields: changing to or from one needs a re-read.
+    const listTypes = ["bank_statement", "broker_statement"];
+    $("#fr-type").onchange = (e) => {
+      const changed = e.target.value !== t;
+      $("#fr-reread").classList.toggle("hidden", !changed);
+      if ($("#fr-apply")) $("#fr-apply").disabled = changed && (listTypes.includes(t) || listTypes.includes(e.target.value));
+    };
+    $("#fr-reread").onclick = async () => {
+      $("#fr-reread").disabled = true;
+      try {
+        await api.post(`/api/finance/documents/${id}/reparse`, { doc_type: $("#fr-type").value });
+        toast("Relecture en cours 🤖");
+        dlg.close();
+        finRenderTab();
+      } catch (e) { toast(e.message, true); $("#fr-reread").disabled = false; }
+    };
+  }
   $("#fr-ignore").onclick = async () => { await api.post(`/api/finance/documents/${id}/ignore`); dlg.close(); finRenderTab(); };
   if ($("#fr-apply")) $("#fr-apply").onclick = async () => {
     const payload = {};
     const acc = $("#fr-account")?.value;
-    if (acc === "new") payload.create_account = { name: $("#fr-new-name").value, kind: $("#fr-new-kind").value };
+    if (acc === "new") {
+      const owner = $("#fr-new-owner").value;
+      payload.create_account = { name: $("#fr-new-name").value, kind: $("#fr-new-kind").value, owners: owner ? { [owner]: 1 } : {} };
+    }
     else if (acc) payload.account_id = +acc;
     if ($("#fr-member")?.value) payload.member_id = +$("#fr-member").value;
     if ($("#fr-type")) payload.doc_type = $("#fr-type").value;

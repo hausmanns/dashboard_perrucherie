@@ -97,10 +97,16 @@ local network. Current features:
    CSV, broker CSV, PDF/photo via a **local-first LLM**, `app/llm.py`) go
    upload → review → apply. Gamified: altitude, XP, badges, quests, monthly
    check-in. Tests: `pip install -r requirements-dev.txt && pytest tests/finance`
-   (384 tests, incl. every row of the official IFD 2026 table). Key endpoints:
+   (388 tests, incl. every row of the official IFD 2026 table). Positions keep
+   ticker (`symbol`, Yahoo — the only id used for live prices), `isin` and
+   `valor` (Swiss n° de valeur) apart; `PUT /holdings/{id}` edits one and
+   fetches the new ticker's price. Key endpoints:
    `GET /api/finance/overview?scope=household|member:<id>`, `/projection`,
    `/montecarlo`, `/accounts`, `POST /checkin`, `POST /documents` (multipart
-   `files`) → `POST /documents/{id}/apply` (`GET /documents/{id}` also
+   `files`, optional `doc_type`: the household's choice, the LLM then gets a
+   short prompt with only that type's fields and cannot overrule it;
+   `POST /documents/{id}/reparse {doc_type}` re-reads as another type, `""` =
+   guess again) → `POST /documents/{id}/apply` (`GET /documents/{id}` also
    returns `debug`: what the LLM was sent, its thinking, raw answer, tokens and
    time per provider tried — 🔍 in Documents), `/transactions`
    (`PUT /transactions/{id} {spread_months: 1–24}` counts an operation 1/N in

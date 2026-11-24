@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS holdings (
     account_id       INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     symbol           TEXT NOT NULL DEFAULT '',    -- Yahoo symbol: VT, CHSPI.SW, VWRL.SW…
     isin             TEXT NOT NULL DEFAULT '',
+    valor            TEXT NOT NULL DEFAULT '',    -- Swiss security number (Valor / n° de valeur)
     name             TEXT NOT NULL,
     quantity         REAL NOT NULL DEFAULT 0,
     currency         TEXT NOT NULL DEFAULT 'CHF',
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS documents (
     size        INTEGER NOT NULL DEFAULT 0,
     sha256      TEXT NOT NULL UNIQUE,
     doc_type    TEXT NOT NULL DEFAULT '',
+    hint_type   TEXT NOT NULL DEFAULT '',         -- type chosen by the household ('' = the model guesses)
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending | parsing | review | applied | error | ignored
     engine      TEXT NOT NULL DEFAULT '',         -- camt | csv:<profile> | llm:<provider/model>
     extracted   TEXT,                             -- json result shown in the review screen
@@ -360,7 +362,8 @@ def docs_dir() -> Path:
 # Columns added after a table was first created: CREATE TABLE IF NOT EXISTS skips old tables.
 ADDED_COLUMNS = {
     "transactions": {"spread_months": "INTEGER NOT NULL DEFAULT 1"},
-    "documents": {"debug": "TEXT"},
+    "documents": {"debug": "TEXT", "hint_type": "TEXT NOT NULL DEFAULT ''"},
+    "holdings": {"valor": "TEXT NOT NULL DEFAULT ''"},
 }
 
 

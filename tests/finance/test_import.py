@@ -171,6 +171,14 @@ def test_degiro_portfolio():
     assert h["isin"] == "IE00BK5BQT80" and h["quantity"] == Decimal("50") and h["price"] == Decimal("110.20")
 
 
+def test_swiss_positions_with_a_valor_column():
+    """A Valor (Swiss security number) is not a Yahoo ticker: it gets its own place."""
+    r = parse_file("depot.csv", "Désignation;Valor;Quantité;Cours\nACME N;1'234'567;4;50.00\n".encode())
+    assert r["kind"] == "holdings"
+    h = r["holdings"][0]
+    assert (h["symbol"], h["valor"], h["name"], h["quantity"]) == ("", "1234567", "ACME N", Decimal("4"))
+
+
 def test_unknown_table_is_returned_for_llm_mapping():
     r = parse_file("weird.csv", b"a;b;c\n1;2;3\n4;5;6\n")
     assert r["kind"] == "table" and r["columns"] == ["a", "b", "c"]

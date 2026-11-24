@@ -326,6 +326,109 @@ def test_payslip_deductions_copied_with_their_minus_sign(client, monkeypatch):
     assert meta["aanp_rate"] == pytest.approx(0.01)
 
 
+def test_broker_statement_without_tickers(client, monkeypatch):
+    """A tax statement prints names, not tickers: Nemotron copied the name into `symbol`,
+    the share price into `value` and a coin's code into `currency`."""
+    from app import llm
+    from app.finance import db
+
+    res = onboard(client)
+    answer = {"doc_type": "broker_statement", "fields": {"person_name": "Lea Dupont", "broker": "Banque Test",
+                                                         "currency": "CHF", "holdings": [
+        {"name": "ACME HOLDING N", "symbol": "ACME HOLDING N", "isin": "1'234'567", "quantity": 4, "price": 50,
+         "value": 50, "currency": "CHF"},
+        {"name": "Big Corp", "symbol": "BIGC", "isin": "US0000000001", "valor": 765432.0, "quantity": 2.5,
+         "price": 100, "value": 250, "currency": "usd"},
+        {"name": "Coincoin", "symbol": "CCN", "isin": "n/a", "quantity": 1000, "value": 20, "currency": "CCN"}]}}
+    monkeypatch.setattr(llm, "chat_json", lambda messages, settings=None, trace=None: (answer, "local:nemotron"))
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    d = client.post("/api/finance/documents", files=[("files", ("releve.png", png, "image/png"))]).json()[0]
+    ex = client.get(f"/api/finance/documents/{d['id']}").json()["extracted"]
+    hs = ex["fields"]["holdings"]
+    assert ex["member_id"] == res["members"]["l"]                          # the holder is found
+    assert [h["symbol"] for h in hs] == ["", "BIGC", "CCN"]                 # a name is not a ticker
+    assert [(h["isin"], h["valor"]) for h in hs] == [("", "1234567"), ("US0000000001", "765432"), ("", "")]
+    assert [h["value"] for h in hs] == [200, 250, 20]                      # 4 × 50, not the share price
+    assert [h["currency"] for h in hs] == ["CHF", "USD", "CHF"]
+    assert hs[2]["asset_class"] == "crypto"
+    # a new account for Lea alone (not shared by default)
+    r = client.post(f"/api/finance/documents/{d['id']}/apply",
+                    json={"create_account": {"name": "Banque Test", "kind": "invest",
+                                             "owners": {str(res["members"]["l"]): 1}}}).json()
+    acc_id = r["result"]["account_created"]
+    acc = client.get(f"/api/finance/accounts/{acc_id}").json()
+    assert acc["owners"] == {str(res["members"]["l"]): 1}
+    rows = sorted(acc["holdings"], key=lambda h: h["name"])
+    assert [(h["symbol"], h["valor"], h["manual_price"], h["currency"]) for h in rows] == [
+        ("", "1234567", 50, "CHF"), ("BIGC", "765432", 100, "USD"), ("CCN", "", 0.02, "CHF")]
+    assert rows[2]["asset_class"] == "crypto"
+
+    # edit a position by hand (add its ticker): the next statement keeps the ticker
+    acme = rows[0]
+    put = client.put(f"/api/finance/holdings/{acme['id']}", json={**{k: acme[k] for k in (
+        "isin", "valor", "name", "quantity", "currency", "asset_class", "manual_price")}, "symbol": "acme.sw"})
+    assert put.status_code == 200
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT symbol FROM holdings WHERE id = ?", (acme["id"],)).fetchone()["symbol"] == "ACME.SW"
+        conn.execute("UPDATE documents SET status = 'review' WHERE id = ?", (d["id"],))
+    client.post(f"/api/finance/documents/{d['id']}/apply", json={"account_id": acc_id})
+    with db.get_conn() as conn:
+        again = db.rows(conn.execute("SELECT symbol, valor FROM holdings WHERE account_id = ? ORDER BY name", (acc_id,)))
+    assert again[0] == {"symbol": "ACME.SW", "valor": "1234567"} and len(again) == 3
+
+
+def test_new_account_from_a_document_can_be_shared(client, monkeypatch):
+    from app import llm
+
+    res = onboard(client)
+    answer = {"doc_type": "broker_statement", "fields": {"person_name": "Lea Dupont", "holdings": []}}
+    monkeypatch.setattr(llm, "chat_json", lambda messages, settings=None, trace=None: (answer, "local:nemotron"))
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+    d = client.post("/api/finance/documents", files=[("files", ("titres.png", png, "image/png"))]).json()[0]
+    assert client.get(f"/api/finance/documents/{d['id']}").json()["extracted"]["member_id"] == res["members"]["l"]
+    r = client.post(f"/api/finance/documents/{d['id']}/apply",
+                    json={"create_account": {"name": "Commun", "kind": "invest", "owners": {}}}).json()
+    # Lea was detected, but « Commun » was chosen: the choice wins
+    assert client.get(f"/api/finance/accounts/{r['result']['account_created']}").json()["owners"] == {}
+
+
+def test_chosen_type_guides_the_model(client, monkeypatch):
+    """A bank's tax statement was guessed as a tax assessment: the household picks the type,
+    the model gets a short prompt with only that type's fields, and its own guess is overruled."""
+    from app import llm
+
+    onboard(client)
+    sent = []
+    answer = {"doc_type": "tax_assessment", "fields": {"holdings": [{"name": "Big Corp", "quantity": 2, "price": 10}]}}
+    def fake_chat(messages, settings=None, trace=None):
+        sent.append(json.dumps(messages, ensure_ascii=False))
+        return answer, "local:nemotron"
+    monkeypatch.setattr(llm, "chat_json", fake_chat)
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+    d = client.post("/api/finance/documents", files=[("files", ("releve.png", png, "image/png"))]).json()[0]
+    assert client.get(f"/api/finance/documents/{d['id']}").json()["doc_type"] == "tax_assessment"  # guessed wrong
+    assert "Identifie son type" in sent[-1]
+
+    r = client.post(f"/api/finance/documents/{d['id']}/reparse", json={"doc_type": "broker_statement"})
+    assert r.status_code == 200
+    d = client.get(f"/api/finance/documents/{d['id']}").json()
+    assert d["doc_type"] == "broker_statement" and d["hint_type"] == "broker_statement"
+    assert d["extracted"]["fields"]["holdings"][0]["value"] is None
+    assert "holdings" in sent[-1] and "gross_monthly" not in sent[-1] and "Identifie son type" not in sent[-1]
+
+    client.post(f"/api/finance/documents/{d['id']}/reparse")                      # « Relire » keeps the choice
+    assert client.get(f"/api/finance/documents/{d['id']}").json()["doc_type"] == "broker_statement"
+    client.post(f"/api/finance/documents/{d['id']}/reparse", json={"doc_type": ""})  # back to guessing
+    assert client.get(f"/api/finance/documents/{d['id']}").json()["doc_type"] == "tax_assessment"
+    assert client.post(f"/api/finance/documents/{d['id']}/reparse", json={"doc_type": "nope"}).status_code == 422
+
+    # chosen at upload: the same file again, with a type, is read again as that type
+    client.post("/api/finance/documents", files=[("files", ("releve.png", png, "image/png"))],
+                data={"doc_type": "broker_statement"})
+    assert client.get(f"/api/finance/documents/{d['id']}").json()["doc_type"] == "broker_statement"
+
+
 def test_backup_roundtrip(client):
     onboard(client)
     r = client.post("/api/finance/backup/export", json={"passphrase": "correct horse battery"})

@@ -133,6 +133,7 @@
 .fin-hold { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) 4.5rem 6.5rem auto; gap: 0.5rem; align-items: center; font-size: 0.84rem; padding: 0.25rem 0; border-bottom: 1px dotted var(--line); }
 .fin-hold span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fin-hold b { text-align: right; font-variant-numeric: tabular-nums; }
+.fin-hold-btns { display: flex; gap: 0.1rem; }
 
 /* budget & transactions */
 .fin-empty { text-align: center; padding: 2rem 1.5rem; }
@@ -225,6 +226,10 @@
 .fin-drop h3 { font-family: var(--font-display); font-size: 1.5rem; }
 .fin-drop p { color: var(--ink-soft); font-size: 0.9rem; line-height: 1.5; }
 .fin-drop-ico { font-size: 2.6rem; }
+.fin-drop-actions { display: flex; flex-direction: column; gap: 0.5rem; align-items: stretch; }
+.fin-drop-actions select { font-size: 0.85rem; }
+.fin-type-row { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+.fin-type-row label { flex: 1 1 14rem; }
 .fin-ai-line { margin-top: 0.4rem; font-size: 0.84rem !important; }
 .fin-docs { display: flex; flex-direction: column; gap: 0.6rem; }
 .fin-doc { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 1rem; }

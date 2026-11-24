@@ -321,6 +321,7 @@ def delete_snapshot(snapshot_id: int):
 class HoldingIn(BaseModel):
     symbol: str = ""
     isin: str = ""
+    valor: str = ""  # Swiss security number
     name: str
     quantity: float
     currency: str = "CHF"
@@ -333,10 +334,10 @@ class HoldingIn(BaseModel):
 def add_holding(account_id: int, h: HoldingIn):
     with db.get_conn() as conn:
         conn.execute("UPDATE accounts SET valuation = 'holdings' WHERE id = ?", (account_id,))
-        conn.execute("INSERT INTO holdings (account_id, symbol, isin, name, quantity, currency, asset_class, "
-                     "cost_basis_cents, manual_price) VALUES (?,?,?,?,?,?,?,?,?)",
-                     (account_id, h.symbol.strip().upper(), h.isin.strip().upper(), h.name, h.quantity,
-                      h.currency.upper()[:3], h.asset_class, opt_cents(h.cost_basis), h.manual_price))
+        conn.execute("INSERT INTO holdings (account_id, symbol, isin, valor, name, quantity, currency, asset_class, "
+                     "cost_basis_cents, manual_price) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (account_id, h.symbol.strip().upper(), h.isin.strip().upper(), h.valor.strip(), h.name,
+                      h.quantity, h.currency.upper()[:3], h.asset_class, opt_cents(h.cost_basis), h.manual_price))
     if h.symbol:
         market.refresh_prices([h.symbol.strip().upper()])
     metrics.write_auto_snapshots()
@@ -349,10 +350,12 @@ def update_holding(holding_id: int, h: HoldingIn):
         row = conn.execute("SELECT account_id FROM holdings WHERE id = ?", (holding_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Position introuvable")
-        conn.execute("UPDATE holdings SET symbol=?, isin=?, name=?, quantity=?, currency=?, asset_class=?, "
+        conn.execute("UPDATE holdings SET symbol=?, isin=?, valor=?, name=?, quantity=?, currency=?, asset_class=?, "
                      "cost_basis_cents=?, manual_price=?, updated_at=datetime('now') WHERE id=?",
-                     (h.symbol.strip().upper(), h.isin.strip().upper(), h.name, h.quantity, h.currency.upper()[:3],
-                      h.asset_class, opt_cents(h.cost_basis), h.manual_price, holding_id))
+                     (h.symbol.strip().upper(), h.isin.strip().upper(), h.valor.strip(), h.name, h.quantity,
+                      h.currency.upper()[:3], h.asset_class, opt_cents(h.cost_basis), h.manual_price, holding_id))
+    if h.symbol.strip():  # a ticker added by hand: its live price right away
+        market.refresh_prices([h.symbol.strip().upper()])
     metrics.write_auto_snapshots()
     return get_account(row["account_id"])
 
@@ -847,16 +850,24 @@ def compare_scenarios(ids: str = "", scope: str = "household"):
 
 @router.post("/documents", status_code=201)
 async def upload_documents(files: list[UploadFile] = File(...), member_id: Optional[int] = Form(None),
-                           account_id: Optional[int] = Form(None)):
-    """Drop one or many files (CAMT.053 XML, CSV, XLSX, PDF, photos). Read in the background."""
+                           account_id: Optional[int] = Form(None), doc_type: Optional[str] = Form(None)):
+    """Drop one or many files (CAMT.053 XML, CSV, XLSX, PDF, photos). Read in the background.
+    `doc_type` (optional): the type chosen by the household — the model then only extracts its fields."""
+    try:
+        hint = documents.check_type(doc_type)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     out = []
     for f in files:
         data = await f.read()
         try:
-            d = documents.store(f.filename or "document", data, f.content_type or "", member_id, account_id)
+            d = documents.store(f.filename or "document", data, f.content_type or "", member_id, account_id, hint)
         except ValueError as e:
             raise HTTPException(413, str(e))
-        if not d.get("duplicate") or d["status"] in ("error", "pending"):
+        rechosen = d.get("duplicate") and hint and hint != d["hint_type"] and d["status"] != "applied"
+        if rechosen:  # same file again, now with a type: read it again as that type
+            documents.set_hint(d["id"], hint)
+        if not d.get("duplicate") or d["status"] in ("error", "pending") or rechosen:
             documents.parse_async(d["id"])
         out.append(d)
     return out
@@ -884,9 +895,18 @@ def get_document_file(doc_id: int):
     return FileResponse(path, filename=d["filename"], media_type=d["mime"] or None)
 
 
+class ReparseIn(BaseModel):
+    doc_type: Optional[str] = None  # None: keep the current choice · "": let the model guess · else that type
+
+
 @router.post("/documents/{doc_id}/reparse")
-def reparse_document(doc_id: int):
+def reparse_document(doc_id: int, body: Optional[ReparseIn] = None):
     get_document(doc_id)
+    if body and body.doc_type is not None:
+        try:
+            documents.set_hint(doc_id, body.doc_type)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
     documents.parse_async(doc_id)
     return {"status": "parsing"}
 
